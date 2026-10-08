@@ -5,11 +5,15 @@ export interface ServerMessageBase {
 export interface OpenTabServerMessage extends ServerMessageBase {
   cmd: "open-tab";
   url: string;
+  /** When Tree Style Tab is available, open the tab as a child of this tab. */
+  parentTabId?: number;
 }
 
 export interface CloseTabsServerMessage extends ServerMessageBase {
   cmd: "close-tabs";
   tabIds: number[];
+  /** When Tree Style Tab is available, keep the child tabs of the closed tabs. */
+  keepChildren?: boolean;
 }
 
 export interface GetTabListServerMessage extends ServerMessageBase {
