@@ -35,12 +35,19 @@ const mockBrowser = {
         get: jest.fn(),
         set: jest.fn(),
     },
+    onChanged: {
+      addListener: jest.fn(),
+    },
   },
   permissions: {
     contains: jest.fn(),
   },
   runtime: {
     getURL: jest.fn(),
+    getManifest: jest.fn(),
+    sendMessage: jest.fn(),
+    reload: jest.fn(),
+    onMessageExternal: { addListener: jest.fn() },
   },
 };
 
