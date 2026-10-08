@@ -1,16 +1,20 @@
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
+import type { BrowserTab } from "@browser-control-mcp/common/extension-messages";
 import { WebsocketClient } from "./client";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry } from "./extension-config";
 import { hasCaptureConsent, markTabAsAwaitingConsent } from "./capture-consent";
+import type { TstClient, TstTreeItem } from "./tst-client";
 
 // Time to let a newly foregrounded tab paint before capturing it
 const TAB_PAINT_DELAY_MS = 250;
 
 export class MessageHandler {
   private client: WebsocketClient;
+  private tst?: TstClient;
 
-  constructor(client: WebsocketClient) {
+  constructor(client: WebsocketClient, tst?: TstClient) {
     this.client = client;
+    this.tst = tst;
   }
 
   public async handleDecodedMessage(req: ServerMessageRequest): Promise<void> {
@@ -25,10 +29,10 @@ export class MessageHandler {
 
     switch (req.cmd) {
       case "open-tab":
-        await this.openUrl(req.correlationId, req.url);
+        await this.openUrl(req.correlationId, req.url, req.parentTabId);
         break;
       case "close-tabs":
-        await this.closeTabs(req.correlationId, req.tabIds);
+        await this.closeTabs(req.correlationId, req.tabIds, req.keepChildren);
         break;
       case "get-tab-list":
         await this.sendTabs(req.correlationId);
@@ -99,7 +103,11 @@ export class MessageHandler {
     await addAuditLogEntry(auditEntry);
   }
 
-  private async openUrl(correlationId: string, url: string): Promise<void> {
+  private async openUrl(
+    correlationId: string,
+    url: string,
+    parentTabId?: number
+  ): Promise<void> {
     if (!url.startsWith("https://")) {
       console.error("Invalid URL:", url);
       throw new Error("Invalid URL");
@@ -109,9 +117,24 @@ export class MessageHandler {
       throw new Error("Domain in user defined deny list");
     }
 
-    const tab = await browser.tabs.create({
-      url,
-    });
+    let options: { url: string; openerTabId?: number } = { url };
+
+    // When Tree Style Tab is available, new tabs become children of the
+    // opener tab. Use the explicitly requested parent, or the currently
+    // active tab so the tab joins the tree the user is looking at.
+    if (this.tst?.isAvailable()) {
+      try {
+        const openerTabId =
+          parentTabId ?? (await this.getActiveTabId());
+        if (openerTabId !== undefined) {
+          options = { url, openerTabId };
+        }
+      } catch (error) {
+        console.error("Failed to determine the opener tab for the new tab:", error);
+      }
+    }
+
+    const tab = await browser.tabs.create(options);
 
     await this.client.sendResourceToServer({
       resource: "opened-tab-id",
@@ -120,10 +143,37 @@ export class MessageHandler {
     });
   }
 
+  private async getActiveTabId(): Promise<number | undefined> {
+    const [activeTab] = await browser.tabs.query({
+      active: true,
+      lastFocusedWindow: true,
+    });
+    return activeTab?.id;
+  }
+
   private async closeTabs(
     correlationId: string,
-    tabIds: number[]
+    tabIds: number[],
+    keepChildren?: boolean
   ): Promise<void> {
+    // With Tree Style Tab, closing a tab whose tree is collapsed would also
+    // close its hidden child tabs. Use TST's command to close only the
+    // specified tabs, keeping their children.
+    if (keepChildren && this.tst?.isAvailable()) {
+      const kept = await this.tst.removeTabsKeepingChildren(tabIds);
+      if (!kept) {
+        console.error(
+          "Failed to close tabs keeping their children via Tree Style Tab, falling back to tabs.remove"
+        );
+      } else {
+        await this.client.sendResourceToServer({
+          resource: "tabs-closed",
+          correlationId,
+        });
+        return;
+      }
+    }
+
     await browser.tabs.remove(tabIds);
     await this.client.sendResourceToServer({
       resource: "tabs-closed",
@@ -133,11 +183,107 @@ export class MessageHandler {
 
   private async sendTabs(correlationId: string): Promise<void> {
     const tabs = await browser.tabs.query({});
+
+    // With Tree Style Tab available, the tabs are sent in tree order with
+    // their tree structure, instead of a flat list.
+    const treeTabs = this.tst?.isAvailable()
+      ? await this.buildTreeTabList(tabs)
+      : null;
+
     await this.client.sendResourceToServer({
       resource: "tabs",
       correlationId,
-      tabs,
+      tabs: treeTabs ?? tabs,
     });
+  }
+
+  /**
+   * Merge the tab data with the Tree Style Tab tree structure, returning
+   * the tabs in depth-first (tree) order with the tree fields populated.
+   * Returns `null` when the two views do not agree (a tab is missing on
+   * one side), so the caller can fall back to the flat list.
+   */
+  private async buildTreeTabList(
+    tabs: browser.tabs.Tab[]
+  ): Promise<BrowserTab[] | null> {
+    const tst = this.tst;
+    if (!tst) return null;
+
+    const tabsById = new Map<number, browser.tabs.Tab>();
+    for (const tab of tabs) {
+      if (tab.id !== undefined) {
+        tabsById.set(tab.id, tab);
+      }
+    }
+
+    const windowIds = new Set<number>();
+    for (const tab of tabs) {
+      if (tab.windowId !== undefined) {
+        windowIds.add(tab.windowId);
+      }
+    }
+
+    const windowTrees: TstTreeItem[][] = [];
+    for (const tree of await Promise.all(
+      [...windowIds].map((windowId) => tst.getLightTree(windowId))
+    )) {
+      if (tree === null) {
+        // The tree query failed for one of the windows.
+        return null;
+      }
+      windowTrees.push(tree);
+    }
+
+    const result: BrowserTab[] = [];
+    let mismatch = false;
+
+    const visit = (
+      item: TstTreeItem,
+      depth: number,
+      parentTabId: number | undefined
+    ): void => {
+      const tab = tabsById.get(item.id);
+      if (!tab) {
+        // TST reported a tab that is not in the open tabs list.
+        mismatch = true;
+        return;
+      }
+      tabsById.delete(item.id);
+      const states = item.states ?? [];
+      result.push({
+        id: tab.id,
+        url: tab.url,
+        title: tab.title,
+        lastAccessed: tab.lastAccessed,
+        windowId: tab.windowId,
+        active: tab.active,
+        depth,
+        parentTabId,
+        childCount: item.children?.length ?? 0,
+        // TST applies "subtree-collapsed" to a tab whose own subtree is
+        // collapsed (the visible branch point whose children are hidden),
+        // and "collapsed" to the descendant tabs that are thereby hidden.
+        // We surface the former: it marks the branch where children are
+        // hidden. Hidden descendants are still listed by get-light-tree.
+        collapsed: states.includes("subtree-collapsed"),
+      });
+      for (const child of item.children ?? []) {
+        visit(child, depth + 1, item.id);
+      }
+    };
+
+    for (const tree of windowTrees) {
+      for (const root of tree) {
+        visit(root, 0, undefined);
+      }
+    }
+
+    // A tab that was in the open tabs list but not in the tree (e.g. a tab
+    // opened in between the two queries, or an incognito tab we cannot see).
+    if (mismatch || tabsById.size > 0) {
+      return null;
+    }
+    return result;
   }
 
   private async sendRecentHistory(
@@ -268,16 +414,63 @@ export class MessageHandler {
     correlationId: string,
     tabOrder: number[]
   ): Promise<void> {
-    // Reorder the tabs sequentially
-    for (let newIndex = 0; newIndex < tabOrder.length; newIndex++) {
-      const tabId = tabOrder[newIndex];
-      await browser.tabs.move(tabId, { index: newIndex });
+    const reordered = await this.reorderTabsViaTst(tabOrder);
+
+    if (!reordered) {
+      // Fall back to the standard API, moving the tabs one by one. TST's
+      // autofixing usually keeps the tree structure intact, but it can be
+      // fragile when several tabs are moved in quick succession.
+      for (let newIndex = 0; newIndex < tabOrder.length; newIndex++) {
+        const tabId = tabOrder[newIndex];
+        await browser.tabs.move(tabId, { index: newIndex });
+      }
     }
+
     await this.client.sendResourceToServer({
       resource: "tabs-reordered",
       correlationId,
       tabOrder,
     });
+  }
+
+  /**
+   * Reorder the tabs using Tree Style Tab's move commands, which move a tab
+   * together with its child tabs. Returns true when the reorder was applied.
+   * Falls back to false when TST is unavailable or any of the commands fails.
+   */
+  private async reorderTabsViaTst(tabOrder: number[]): Promise<boolean> {
+    const tst = this.tst;
+    if (!tst || !tst.isAvailable() || tabOrder.length === 0) {
+      return false;
+    }
+
+    try {
+      // TST's move commands only work within a single window.
+      const windowIds = new Set<number>();
+      for (const tabId of tabOrder) {
+        const tab = await browser.tabs.get(tabId);
+        if (tab.windowId === undefined) {
+          return false;
+        }
+        windowIds.add(tab.windowId);
+      }
+      if (windowIds.size > 1) {
+        return false;
+      }
+
+      if (!(await tst.moveTabToStart(tabOrder[0]))) {
+        return false;
+      }
+      for (let i = 1; i < tabOrder.length; i++) {
+        if (!(await tst.moveTabAfter(tabOrder[i], tabOrder[i - 1]))) {
+          return false;
+        }
+      }
+      return true;
+    } catch (error) {
+      console.error("Failed to reorder tabs via Tree Style Tab:", error);
+      return false;
+    }
   }
 
   private async findAndHighlightText(
@@ -408,11 +601,34 @@ export class MessageHandler {
     groupColor: browser.tabGroups.Color,
     groupTitle: string
   ): Promise<void> {
-    const groupId = await browser.tabs.group({
+    // When Tree Style Tab is available, create a TST group tab instead of a
+    // native tab group. The TST API has no color parameter, so the color is
+    // ignored on this path.
+    if (this.tst?.isAvailable()) {
+      const groupId = await this.tst.createGroup(tabIds, groupTitle);
+      if (groupId !== null) {
+        // Collapse the group's tree if requested. TST reports success even
+        // when the group has no (or not enough) child tabs to collapse.
+        if (isCollapsed) {
+          await this.tst.collapseTree(groupId);
+        }
+        await this.client.sendResourceToServer({
+          resource: "new-tab-group",
+          correlationId,
+          groupId,
+        });
+        return;
+      }
+      console.error(
+        "Failed to create a Tree Style Tab group, falling back to native tab groups"
+      );
+    }
+
+    const nativeGroupId = await browser.tabs.group({
       tabIds,
     });
 
-    let tabGroup = await browser.tabGroups.update(groupId, {
+    let tabGroup = await browser.tabGroups.update(nativeGroupId, {
       collapsed: isCollapsed,
       color: groupColor,
       title: groupTitle,

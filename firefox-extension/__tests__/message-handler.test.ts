@@ -1,5 +1,6 @@
 import { MessageHandler } from "../message-handler";
 import { WebsocketClient } from "../client";
+import { TstClient } from "../tst-client";
 import type { ServerMessageRequest } from "@browser-control-mcp/common";
 import { ExtensionConfig } from "../extension-config";
 import { grantCaptureConsent, revokeCaptureConsent } from "../capture-consent";
@@ -16,9 +17,40 @@ jest.mock("../client", () => {
   };
 });
 
+// Mock the TstClient so tests can control whether Tree Style Tab is
+// available and what its commands return.
+jest.mock("../tst-client", () => {
+  const mockTstClient = {
+    isAvailable: jest.fn(),
+    getLightTree: jest.fn(),
+    createGroup: jest.fn(),
+    collapseTree: jest.fn(),
+    moveTabToStart: jest.fn(),
+    moveTabAfter: jest.fn(),
+    removeTabsKeepingChildren: jest.fn(),
+  };
+  return {
+    __esModule: true,
+    TST_ADDON_ID: "treestyletab@piro.sakura.ne.jp",
+    TstClient: jest.fn().mockImplementation(() => mockTstClient),
+  };
+});
+
+interface MockTstClient {
+  isAvailable: jest.Mock;
+  getLightTree: jest.Mock;
+  createGroup: jest.Mock;
+  collapseTree: jest.Mock;
+  moveTabToStart: jest.Mock;
+  moveTabAfter: jest.Mock;
+  removeTabsKeepingChildren: jest.Mock;
+}
+
 describe("MessageHandler", () => {
   let messageHandler: MessageHandler;
   let mockClient: jest.Mocked<WebsocketClient>;
+  let mockTst: MockTstClient;
+  let tstHandler: MessageHandler;
 
   beforeEach(() => {
     // Clear all mocks before each test
@@ -30,6 +62,21 @@ describe("MessageHandler", () => {
       "test-secret"
     ) as jest.Mocked<WebsocketClient>;
     messageHandler = new MessageHandler(mockClient);
+
+    // A second handler with a Tree Style Tab client. TST is unavailable by
+    // default; the Tree Style Tab tests enable it explicitly.
+    mockTst = new TstClient(async () => true) as unknown as MockTstClient;
+    mockTst.isAvailable.mockReturnValue(false);
+    mockTst.getLightTree.mockResolvedValue([]);
+    mockTst.createGroup.mockResolvedValue(null);
+    mockTst.collapseTree.mockResolvedValue(true);
+    mockTst.moveTabToStart.mockResolvedValue(true);
+    mockTst.moveTabAfter.mockResolvedValue(true);
+    mockTst.removeTabsKeepingChildren.mockResolvedValue(true);
+    tstHandler = new MessageHandler(
+      mockClient,
+      mockTst as unknown as TstClient
+    );
 
     // Mock browser.storage.local.get to return default config
     const defaultConfig: ExtensionConfig = {
@@ -716,6 +763,541 @@ describe("MessageHandler", () => {
           messageHandler.handleDecodedMessage(request)
         ).rejects.toThrow("Command 'capture-screenshot' is disabled");
         expect(browser.tabs.captureVisibleTab).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("Tree Style Tab integration", () => {
+      describe("open-tab command", () => {
+        it("should open the tab as a child of the active tab when TST is available", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 42 }]);
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+
+          const request: ServerMessageRequest = {
+            cmd: "open-tab",
+            url: "https://example.com",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.query).toHaveBeenCalledWith({
+            active: true,
+            lastFocusedWindow: true,
+          });
+          expect(browser.tabs.create).toHaveBeenCalledWith({
+            url: "https://example.com",
+            openerTabId: 42,
+          });
+        });
+
+        it("should open the tab as a child of the requested parent tab", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+
+          const request: ServerMessageRequest = {
+            cmd: "open-tab",
+            url: "https://example.com",
+            parentTabId: 99,
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.query).not.toHaveBeenCalled();
+          expect(browser.tabs.create).toHaveBeenCalledWith({
+            url: "https://example.com",
+            openerTabId: 99,
+          });
+        });
+
+        it("should open without an opener when TST is available but there is no active tab", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([]);
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+
+          const request: ServerMessageRequest = {
+            cmd: "open-tab",
+            url: "https://example.com",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.create).toHaveBeenCalledWith({
+            url: "https://example.com",
+          });
+        });
+
+        it("should open without an opener when TST is unavailable", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(false);
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+
+          const request: ServerMessageRequest = {
+            cmd: "open-tab",
+            url: "https://example.com",
+            parentTabId: 99,
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.create).toHaveBeenCalledWith({
+            url: "https://example.com",
+          });
+        });
+      });
+
+      describe("close-tabs command", () => {
+        it("should keep the children of closed tabs when TST is available", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.removeTabsKeepingChildren.mockResolvedValue(true);
+
+          const request: ServerMessageRequest = {
+            cmd: "close-tabs",
+            tabIds: [123, 456],
+            keepChildren: true,
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.removeTabsKeepingChildren).toHaveBeenCalledWith([
+            123, 456,
+          ]);
+          expect(browser.tabs.remove).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs-closed",
+            correlationId: "test-correlation-id",
+          });
+        });
+
+        it("should fall back to tabs.remove when TST fails to keep the children", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.removeTabsKeepingChildren.mockResolvedValue(false);
+          (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
+
+          const request: ServerMessageRequest = {
+            cmd: "close-tabs",
+            tabIds: [123, 456],
+            keepChildren: true,
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.remove).toHaveBeenCalledWith([123, 456]);
+        });
+
+        it("should use tabs.remove when TST is unavailable", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(false);
+          (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
+
+          const request: ServerMessageRequest = {
+            cmd: "close-tabs",
+            tabIds: [123, 456],
+            keepChildren: true,
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.removeTabsKeepingChildren).not.toHaveBeenCalled();
+          expect(browser.tabs.remove).toHaveBeenCalledWith([123, 456]);
+        });
+      });
+
+      describe("get-tab-list command", () => {
+        it("should send the tabs in tree order with tree fields when TST is available", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          const mockTabs = [
+            {
+              id: 1,
+              windowId: 1,
+              url: "https://a.com",
+              title: "A",
+              lastAccessed: 1000,
+              active: true,
+            },
+            {
+              id: 2,
+              windowId: 1,
+              url: "https://b.com",
+              title: "B",
+              lastAccessed: 2000,
+              active: false,
+            },
+            {
+              id: 3,
+              windowId: 1,
+              url: "https://c.com",
+              title: "C",
+              lastAccessed: 3000,
+              active: false,
+            },
+          ];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+          mockTst.getLightTree.mockResolvedValue([
+            {
+              id: 1,
+              states: [],
+              children: [
+                {
+                  id: 2,
+                  states: ["subtree-collapsed"],
+                  children: [
+                    {
+                      id: 3,
+                      states: ["collapsed"],
+                      children: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ]);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.getLightTree).toHaveBeenCalledWith(1);
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: [
+              {
+                id: 1,
+                url: "https://a.com",
+                title: "A",
+                lastAccessed: 1000,
+                windowId: 1,
+                active: true,
+                depth: 0,
+                parentTabId: undefined,
+                childCount: 1,
+                collapsed: false,
+              },
+              {
+                id: 2,
+                url: "https://b.com",
+                title: "B",
+                lastAccessed: 2000,
+                windowId: 1,
+                active: false,
+                depth: 1,
+                parentTabId: 1,
+                childCount: 1,
+                collapsed: true,
+              },
+              {
+                id: 3,
+                url: "https://c.com",
+                title: "C",
+                lastAccessed: 3000,
+                windowId: 1,
+                active: false,
+                depth: 2,
+                parentTabId: 2,
+                childCount: 0,
+                collapsed: false,
+              },
+            ],
+          });
+        });
+
+        it("should fall back to the flat list when a tab is missing from the TST tree", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          const mockTabs = [
+            { id: 1, windowId: 1, url: "https://a.com" },
+            { id: 2, windowId: 1, url: "https://b.com" },
+          ];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+          mockTst.getLightTree.mockResolvedValue([
+            { id: 1, children: [] },
+          ]);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: mockTabs,
+          });
+        });
+
+        it("should fall back to the flat list when the TST tree contains an unknown tab", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          const mockTabs = [{ id: 1, windowId: 1, url: "https://a.com" }];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+          mockTst.getLightTree.mockResolvedValue([
+            { id: 999, children: [] },
+          ]);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: mockTabs,
+          });
+        });
+
+        it("should fall back to the flat list when the tree query fails", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          const mockTabs = [{ id: 1, windowId: 1, url: "https://a.com" }];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+          mockTst.getLightTree.mockResolvedValue(null);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: mockTabs,
+          });
+        });
+
+        it("should fall back to the flat list when TST is unavailable", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(false);
+          const mockTabs = [{ id: 1, windowId: 1, url: "https://a.com" }];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.getLightTree).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: mockTabs,
+          });
+        });
+      });
+
+      describe("reorder-tabs command", () => {
+        it("should reorder the tabs via TST when available", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.get as jest.Mock).mockImplementation(
+            (tabId: number) => Promise.resolve({ id: tabId, windowId: 1 })
+          );
+
+          const request: ServerMessageRequest = {
+            cmd: "reorder-tabs",
+            tabOrder: [123, 456, 789],
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.moveTabToStart).toHaveBeenCalledWith(123);
+          expect(mockTst.moveTabAfter).toHaveBeenNthCalledWith(1, 456, 123);
+          expect(mockTst.moveTabAfter).toHaveBeenNthCalledWith(2, 789, 456);
+          expect(browser.tabs.move).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs-reordered",
+            correlationId: "test-correlation-id",
+            tabOrder: [123, 456, 789],
+          });
+        });
+
+        it("should fall back to tabs.move when the tabs span multiple windows", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.get as jest.Mock).mockImplementation(
+            (tabId: number) =>
+              Promise.resolve({ id: tabId, windowId: tabId === 123 ? 1 : 2 })
+          );
+          (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+
+          const request: ServerMessageRequest = {
+            cmd: "reorder-tabs",
+            tabOrder: [123, 456],
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.moveTabToStart).not.toHaveBeenCalled();
+          expect(mockTst.moveTabAfter).not.toHaveBeenCalled();
+          expect(browser.tabs.move).toHaveBeenCalledTimes(2);
+        });
+
+        it("should fall back to tabs.move when a TST move command fails", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.moveTabToStart.mockResolvedValue(false);
+          (browser.tabs.get as jest.Mock).mockImplementation(
+            (tabId: number) => Promise.resolve({ id: tabId, windowId: 1 })
+          );
+          (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+
+          const request: ServerMessageRequest = {
+            cmd: "reorder-tabs",
+            tabOrder: [123, 456],
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.move).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      describe("group-tabs command", () => {
+        it("should create a TST group when TST is available", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.createGroup.mockResolvedValue(789);
+
+          const request: ServerMessageRequest = {
+            cmd: "group-tabs",
+            tabIds: [123, 456],
+            isCollapsed: true,
+            groupColor: "blue",
+            groupTitle: "My group",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.createGroup).toHaveBeenCalledWith(
+            [123, 456],
+            "My group"
+          );
+          expect(mockTst.collapseTree).toHaveBeenCalledWith(789);
+          expect(browser.tabs.group).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "new-tab-group",
+            correlationId: "test-correlation-id",
+            groupId: 789,
+          });
+        });
+
+        it("should not collapse the TST group when not requested", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.createGroup.mockResolvedValue(789);
+
+          const request: ServerMessageRequest = {
+            cmd: "group-tabs",
+            tabIds: [123, 456],
+            isCollapsed: false,
+            groupColor: "blue",
+            groupTitle: "My group",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockTst.collapseTree).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "new-tab-group",
+            correlationId: "test-correlation-id",
+            groupId: 789,
+          });
+        });
+
+        it("should fall back to native tab groups when TST group creation fails", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.createGroup.mockResolvedValue(null);
+          (browser.tabs.group as jest.Mock).mockResolvedValue(100);
+          (browser.tabGroups.update as jest.Mock).mockResolvedValue({
+            id: 100,
+          });
+
+          const request: ServerMessageRequest = {
+            cmd: "group-tabs",
+            tabIds: [123, 456],
+            isCollapsed: true,
+            groupColor: "blue",
+            groupTitle: "My group",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(browser.tabs.group).toHaveBeenCalledWith({
+            tabIds: [123, 456],
+          });
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "new-tab-group",
+            correlationId: "test-correlation-id",
+            groupId: 100,
+          });
+        });
       });
     });
   });
