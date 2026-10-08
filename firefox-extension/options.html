@@ -396,6 +396,30 @@
     </div>
 
     <div class="section-container">
+      <h2>Tree Style Tab Integration</h2>
+      <div class="section-content">
+        <p>When the <a href="https://addons.mozilla.org/firefox/addon/tree-style-tab/" target="_blank" rel="noopener noreferrer">Tree Style Tab</a>
+          add-on is installed and enabled, the extension can use its API to work with the tab tree:</p>
+        <ul style="font-size: 14px; color: #666; line-height: 1.5;">
+          <li>New tabs are opened as children of the active tab</li>
+          <li>The tab list is shown as an indented tree</li>
+          <li>Grouping tabs creates Tree Style Tab groups</li>
+          <li>Closing a tab can keep its child tabs</li>
+        </ul>
+        <div style="display: flex; align-items: center; gap: 8px; margin: 10px 0;">
+          <input type="radio" id="tst-mode-auto" name="tst-integration" value="auto" />
+          <label for="tst-mode-auto" style="font-size: 14px;">Use Tree Style Tab when it is available (recommended)</label>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; margin: 10px 0;">
+          <input type="radio" id="tst-mode-off" name="tst-integration" value="off" />
+          <label for="tst-mode-off" style="font-size: 14px;">Never use Tree Style Tab</label>
+        </div>
+        <button class="copy-button" id="save-tst-mode">Save</button>
+        <div class="status" id="tst-status"></div>
+      </div>
+    </div>
+
+    <div class="section-container">
       <h2>Tool Permissions</h2>
       <div class="section-content">
         <p>Enable or disable specific MCP tools that can interact with your browser:</p>
