@@ -24,7 +24,12 @@ test("a second BrowserAPI forwards requests through the first instance", async (
 test("a follower forwards every browser command", async () => {
   await withConnectedApis(async ({ follower }) => {
     assert.equal(await follower.openTab("https://example.com/new"), 7);
+    assert.equal(
+      await follower.openTab("https://example.com/child", 7),
+      8
+    );
     await follower.closeTabs([42]);
+    await follower.closeTabs([7], true);
     assert.deepEqual(await follower.getBrowserRecentHistory("search"), [
       { url: "https://example.com/history", title: "History" },
     ]);
@@ -263,10 +268,18 @@ async function connectExtensionWithRetry(port, secret, timeoutMs) {
 function responseFor(request) {
   switch (request.cmd) {
     case "open-tab":
+      if (request.url === "https://example.com/child") {
+        assert.equal(request.parentTabId, 7);
+        return { resource: "opened-tab-id", correlationId: request.correlationId, tabId: 8 };
+      }
       assert.equal(request.url, "https://example.com/new");
       return { resource: "opened-tab-id", correlationId: request.correlationId, tabId: 7 };
     case "close-tabs":
-      assert.deepEqual(request.tabIds, [42]);
+      if (request.keepChildren === true) {
+        assert.deepEqual(request.tabIds, [7]);
+      } else {
+        assert.deepEqual(request.tabIds, [42]);
+      }
       return { resource: "tabs-closed", correlationId: request.correlationId };
     case "get-tab-list":
       return {
