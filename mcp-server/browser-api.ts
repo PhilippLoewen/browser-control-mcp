@@ -31,6 +31,10 @@ import {
 
 const WS_DEFAULT_PORT = 8089;
 const EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
+// With Tree Style Tab available, fetching the tab list requires one TST
+// round trip per window, so it may take noticeably longer than the other
+// commands.
+const TAB_LIST_RESPONSE_TIMEOUT_MS = 5000;
 // Capturing may foreground the tab, wait for it to paint, encode the image and transfer a
 // payload orders of magnitude larger than the other responses.
 const SCREENSHOT_RESPONSE_TIMEOUT_MS = 10000;
@@ -277,23 +281,27 @@ export class BrowserAPI {
     return this.wsServers[0]?.options.port ?? this.selectedPort ?? undefined;
   }
 
-  async openTab(url: string): Promise<number | undefined> {
+  async openTab(url: string, parentTabId?: number): Promise<number | undefined> {
     const message = await this.requestExtension(
-      { cmd: "open-tab", url },
+      { cmd: "open-tab", url, parentTabId },
       "opened-tab-id"
     );
     return message.tabId;
   }
 
-  async closeTabs(tabIds: number[]) {
+  async closeTabs(tabIds: number[], keepChildren?: boolean) {
     await this.requestExtension(
-      { cmd: "close-tabs", tabIds },
+      { cmd: "close-tabs", tabIds, keepChildren },
       "tabs-closed"
     );
   }
 
   async getTabList(): Promise<BrowserTab[]> {
-    const message = await this.requestExtension({ cmd: "get-tab-list" }, "tabs");
+    const message = await this.requestExtension(
+      { cmd: "get-tab-list" },
+      "tabs",
+      TAB_LIST_RESPONSE_TIMEOUT_MS
+    );
     return message.tabs;
   }
 
