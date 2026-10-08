@@ -90,7 +90,13 @@ export interface ExtensionConfig {
   domainDenyList?: string[];
   ports: number[];
   auditLog?: AuditLogEntry[];
+  tstIntegrationMode?: TstIntegrationMode;
 }
+
+// How the extension integrates with the Tree Style Tab add-on.
+// "auto" uses the TST API when TST is available and falls back to the
+// standard WebExtensions APIs otherwise; "off" never uses the TST API.
+export type TstIntegrationMode = "auto" | "off";
 
 /**
  * Gets the default tool settings (all enabled)
@@ -268,6 +274,34 @@ export async function getPorts(): Promise<number[]> {
 export async function setPorts(ports: number[]): Promise<void> {
   const config = await getConfig();
   config.ports = ports;
+  await saveConfig(config);
+}
+
+/**
+ * Gets the Tree Style Tab integration mode.
+ * @returns The current mode, "auto" when not explicitly set
+ */
+export async function getTstIntegrationMode(): Promise<TstIntegrationMode> {
+  const config = await getConfig();
+  return config.tstIntegrationMode ?? "auto";
+}
+
+/**
+ * Checks whether the Tree Style Tab integration is enabled
+ * @returns A Promise that resolves with true when the mode is "auto"
+ */
+export async function isTstIntegrationEnabled(): Promise<boolean> {
+  return (await getTstIntegrationMode()) === "auto";
+}
+
+/**
+ * Sets the Tree Style Tab integration mode
+ * @param mode The mode to set
+ * @returns A Promise that resolves when the setting is saved
+ */
+export async function setTstIntegrationMode(mode: TstIntegrationMode): Promise<void> {
+  const config = await getConfig();
+  config.tstIntegrationMode = mode;
   await saveConfig(config);
 }
 
