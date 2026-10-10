@@ -14,7 +14,7 @@ const mcpServer = new McpServer({
 
 mcpServer.tool(
   "open-browser-tab",
-  "Open a new tab in the user's browser (useful when the user asks to open a website). When Tree Style Tab is installed and enabled, the new tab becomes a child of the active tab, or of the tab given as parentTabId if provided.",
+  "Open a new tab in the user's browser (useful when the user asks to open a website). The url must be a full https:// URL — other schemes (http://, about:blank, file://) are rejected by the browser. When Tree Style Tab is installed and enabled, the new tab becomes a child of the active tab, or of the tab given as parentTabId if provided.",
   {
     url: z.string(),
     parentTabId: z

@@ -594,6 +594,8 @@ describe("MessageHandler", () => {
           windowId: 7,
           index: -1,
         });
+        // No placeholder: window 1 still holds a second tab.
+        expect(browser.tabs.create).not.toHaveBeenCalled();
         expect(browser.tabs.remove).toHaveBeenCalledWith(900);
         expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
           resource: "window-created",
@@ -795,6 +797,144 @@ describe("MessageHandler", () => {
           windowId: 7,
           tabIds: [123],
         });
+      });
+
+      it("should keep a source window open via a placeholder when it holds only the moved tab and close the placeholder afterwards", async () => {
+        // Arrange: window 1 holds only tab 123. Moving 123 out would
+        // leave the window without tabs, and Firefox would close it.
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([{ id: 123, windowId: 1, index: 0 }]);
+          }
+        );
+        (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 901 });
+        (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+        (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert: a placeholder is opened in the source window before
+        // the move and closed again afterwards.
+        expect(browser.tabs.create).toHaveBeenCalledWith({
+          windowId: 1,
+          url: "about:blank",
+        });
+        expect(browser.tabs.move).toHaveBeenCalledTimes(1);
+        expect(browser.tabs.move).toHaveBeenCalledWith(123, {
+          windowId: 7,
+          index: -1,
+        });
+        // The new window's default tab and the placeholder are removed.
+        expect(browser.tabs.remove).toHaveBeenCalledWith(900);
+        expect(browser.tabs.remove).toHaveBeenCalledWith(901);
+        expect(browser.windows.remove).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "window-created",
+          correlationId: "test-correlation-id",
+          windowId: 7,
+          tabIds: [123],
+        });
+      });
+
+      it("should restore a tab to its source window that would otherwise close itself when a later move fails", async () => {
+        // Arrange: window 1 holds only tab 123, so a placeholder keeps
+        // it open while 123 is moved out. The second tab (a stale ID)
+        // fails the move; the rollback must still be able to move 123
+        // back to window 1.
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123, 999999999],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([{ id: 123, windowId: 1, index: 0 }]);
+          }
+        );
+        (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 901 });
+        (browser.tabs.move as jest.Mock)
+          .mockResolvedValueOnce(undefined) // 123 into the new window
+          .mockRejectedValueOnce(new Error("Invalid tab ID: 999999999"))
+          .mockResolvedValueOnce(undefined); // 123 back to window 1
+        (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
+        (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Invalid tab ID: 999999999");
+        expect(browser.tabs.create).toHaveBeenCalledWith({
+          windowId: 1,
+          url: "about:blank",
+        });
+        expect(browser.tabs.move).toHaveBeenCalledTimes(3);
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
+          windowId: 7,
+          index: -1,
+        });
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(2, 999999999, {
+          windowId: 7,
+          index: -1,
+        });
+        // The rollback moves 123 back to window 1 — possible because the
+        // placeholder kept the window open.
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(3, 123, {
+          windowId: 1,
+          index: 0,
+        });
+        // The placeholder is closed and the new window is removed.
+        expect(browser.tabs.remove).toHaveBeenCalledWith(901);
+        expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should close the new window and rethrow if opening a placeholder fails", async () => {
+        // Arrange: window 1 holds only tab 123, so a placeholder would
+        // be needed; opening it fails. Nothing must be moved and the
+        // new window must be cleaned up.
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([{ id: 123, windowId: 1, index: 0 }]);
+          }
+        );
+        (browser.tabs.create as jest.Mock).mockRejectedValue(
+          new Error("Cannot open tab")
+        );
+        (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Cannot open tab");
+        expect(browser.tabs.move).not.toHaveBeenCalled();
+        expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
       });
     });
 

@@ -544,6 +544,16 @@ export class MessageHandler {
    * with a single default tab, so when tabs are given that default tab is
    * closed again after the moves, leaving exactly the given tabs behind.
    *
+   * Firefox closes a window that is left without tabs. A source window
+   * that holds only the tab being moved out of it would therefore close
+   * itself during the move, and the rollback below could no longer move
+   * the tab back to it. Such a window is given a throwaway about:blank
+   * placeholder tab before the move so it stays open; the placeholders
+   * are closed again at the end of both the success and the failure
+   * path, so on success the now-empty source window closes itself (as it
+   * would without the placeholders) and on failure the restored tab
+   * occupies the window again.
+   *
    * If a move fails partway through, the tabs that were already moved
    * into the new window are moved back to their original window and
    * index first (in reverse order, best effort per tab) and only then is
@@ -572,6 +582,10 @@ export class MessageHandler {
       { windowId: number; index: number }
     >();
     const movedTabIds: number[] = [];
+    // Throwaway placeholder tabs (see the JSDoc): one per source window
+    // that would be left without tabs by the move, so the window cannot
+    // close itself before a failed move is rolled back.
+    const placeholderTabIds: number[] = [];
     try {
       // Firefox opens every new window with a single default tab. Remember
       // it now, before any of the given tabs are moved in, so it can be
@@ -585,6 +599,15 @@ export class MessageHandler {
         // single query for all tabs (each Tab carries windowId and
         // index).
         const allTabs = await browser.tabs.query({});
+        const tabsPerWindow = new Map<number, number>();
+        for (const tab of allTabs) {
+          if (tab.windowId !== undefined) {
+            tabsPerWindow.set(
+              tab.windowId,
+              (tabsPerWindow.get(tab.windowId) ?? 0) + 1
+            );
+          }
+        }
         for (const tab of allTabs) {
           if (
             tab.id !== undefined &&
@@ -595,6 +618,24 @@ export class MessageHandler {
               windowId: tab.windowId,
               index: tab.index,
             });
+          }
+        }
+        // Give every source window that would be left without tabs a
+        // placeholder tab so it stays open for the duration of the
+        // command (see the JSDoc).
+        const sourceWindowIds = new Set<number>();
+        for (const position of originalPositions.values()) {
+          sourceWindowIds.add(position.windowId);
+        }
+        for (const sourceWindowId of sourceWindowIds) {
+          if (tabsPerWindow.get(sourceWindowId) === 1) {
+            const placeholder = await browser.tabs.create({
+              windowId: sourceWindowId,
+              url: "about:blank",
+            });
+            if (placeholder.id !== undefined) {
+              placeholderTabIds.push(placeholder.id);
+            }
           }
         }
       }
@@ -608,6 +649,9 @@ export class MessageHandler {
           // simply contains the given tabs.
         });
       }
+      // The placeholders have served their purpose; a source window
+      // that is left without tabs afterwards closes itself.
+      await this.removePlaceholderTabs(placeholderTabIds);
     } catch (error) {
       // A move failed while some tabs are already in the new window.
       // Firefox's windows.remove closes a window together with all of
@@ -642,6 +686,9 @@ export class MessageHandler {
           allRestored = false;
         }
       }
+      // Remove the placeholders again; the restored tabs (if any) keep
+      // their source windows open on their own.
+      await this.removePlaceholderTabs(placeholderTabIds);
       if (!allRestored) {
         // The moved tabs are still in the new window and could not be
         // restored; keep the window open so they are not closed, and
@@ -673,6 +720,21 @@ export class MessageHandler {
       windowId,
       tabIds,
     });
+  }
+
+  /**
+   * Close the throwaway placeholder tabs again, best effort per tab: a
+   * placeholder may already be gone, and a source window that is left
+   * without tabs afterwards closes itself (intended on the success path).
+   */
+  private async removePlaceholderTabs(
+    placeholderIds: number[]
+  ): Promise<void> {
+    for (const placeholderId of placeholderIds) {
+      await browser.tabs.remove(placeholderId).catch(() => {
+        // Best effort: the placeholder may already be gone.
+      });
+    }
   }
 
   /**
