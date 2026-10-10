@@ -73,7 +73,7 @@ The extension generates a random secret key that must be configured in the MCP s
 
 ### Issue tracker
 
-Issues are tracked as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues on the repo's GitHub. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
