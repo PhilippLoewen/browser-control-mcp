@@ -9,15 +9,21 @@ dayjs.extend(relativeTime);
 
 const mcpServer = new McpServer({
   name: "BrowserControl",
-  version: "1.5.2",
+  version: "1.6.0",
 });
 
 mcpServer.tool(
   "open-browser-tab",
-  "Open a new tab in the user's browser (useful when the user asks to open a website)",
-  { url: z.string() },
-  async ({ url }) => {
-    const openedTabId = await browserApi.openTab(url);
+  "Open a new tab in the user's browser (useful when the user asks to open a website). The url must be a full https:// URL — other schemes (http://, about:blank, file://) are rejected by the browser. When Tree Style Tab is installed and enabled, the new tab becomes a child of the active tab, or of the tab given as parentTabId if provided.",
+  {
+    url: z.string(),
+    parentTabId: z
+      .number()
+      .optional()
+      .describe("Open the tab as a child of this tab (Tree Style Tab only; defaults to the active tab)"),
+  },
+  async ({ url, parentTabId }) => {
+    const openedTabId = await browserApi.openTab(url, parentTabId);
     if (openedTabId !== undefined) {
       return {
         content: [
@@ -37,10 +43,16 @@ mcpServer.tool(
 
 mcpServer.tool(
   "close-browser-tabs",
-  "Close tabs in the user's browser by tab IDs",
-  { tabIds: z.array(z.number()) },
-  async ({ tabIds }) => {
-    await browserApi.closeTabs(tabIds);
+  "Close tabs in the user's browser by tab IDs. When Tree Style Tab is installed and enabled, use keepChildren to close only the given tabs and keep their child tabs (otherwise closing a collapsed tree would close its hidden children too).",
+  {
+    tabIds: z.array(z.number()),
+    keepChildren: z
+      .boolean()
+      .default(false)
+      .describe("Keep the child tabs of the closed tabs (Tree Style Tab only; defaults to false)"),
+  },
+  async ({ tabIds, keepChildren }) => {
+    await browserApi.closeTabs(tabIds, keepChildren);
     return {
       content: [{ type: "text", text: "Closed tabs" }],
     };
@@ -49,7 +61,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-list-of-open-tabs",
-  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs.",
+  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs. When Tree Style Tab is installed and enabled, tabs are listed in tree order, indented by their depth, with markers for the active tab, the number of child tabs, and collapsed subtrees (collapsed = the tab's child tabs are hidden). Each tab line includes the ID of the window the tab belongs to.",
   {
     offset: z.number().int().min(0).default(0).describe("Starting index for pagination (0-based, must be >= 0)"),
     limit: z.number().default(100).describe("Maximum number of tabs to return (default: 100, max: 500)"),
@@ -76,9 +88,20 @@ mcpServer.tool(
       if (tab.lastAccessed) {
         lastAccessed = dayjs(tab.lastAccessed).fromNow(); // LLM-friendly time ago
       }
+      const markers: string[] = [];
+      if (tab.active) {
+        markers.push("[active]");
+      }
+      if (tab.childCount) {
+        markers.push(`[${tab.childCount} child tab${tab.childCount === 1 ? "" : "s"}]`);
+      }
+      if (tab.collapsed) {
+        markers.push("[collapsed]");
+      }
+      const markerSuffix = markers.length > 0 ? ` ${markers.join(" ")}` : "";
       return {
         type: "text" as const,
-        text: `tab id=${tab.id}, tab url=${tab.url}, tab title=${tab.title}, last accessed=${lastAccessed}`,
+        text: `${"  ".repeat(tab.depth ?? 0)}tab id=${tab.id}, tab window=${tab.windowId ?? "unknown"}, tab url=${tab.url}, tab title=${tab.title}, last accessed=${lastAccessed}${markerSuffix}`,
       };
     });
 
@@ -196,7 +219,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "group-browser-tabs",
-  "Organize opened browser tabs in a new tab group",
+  "Organize opened browser tabs in a new tab group. When Tree Style Tab is installed and enabled, a Tree Style Tab group is created instead (the groupColor option is then ignored), and isCollapsed collapses that group's tree.",
   {
     tabIds: z.array(z.number()),
     isCollapsed: z.boolean().default(false),
@@ -227,6 +250,75 @@ mcpServer.tool(
         {
           type: "text",
           text: `Created tab group "${groupTitle}" with ${tabIds.length} tabs (group ID: ${groupId})`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "move-tab-to-window",
+  "Move one or more browser tabs to a different window. The target window ID is shown in the get-list-of-open-tabs output. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
+  {
+    tabIds: z.array(z.number()),
+    windowId: z
+      .number()
+      .describe("ID of the target window, as shown in the get-list-of-open-tabs output"),
+  },
+  async ({ tabIds, windowId }) => {
+    await browserApi.moveTabsToWindow(tabIds, windowId);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Moved tabs ${tabIds.join(", ")} to window ${windowId}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "create-window",
+  "Create a new browser window, optionally moving the given tabs into it in the given order. If no tabs are given, the window opens with a single new tab. If tabs are given, the window's own default tab is closed so it contains exactly the moved tabs. Returns the ID of the new window. If a move fails, the already-moved tabs are restored to their original windows and the new window is closed; if a tab cannot be restored, the new window is left open and its ID is reported in the error. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
+  {
+    tabIds: z
+      .array(z.number())
+      .default([])
+      .describe("IDs of the tabs to move into the new window; omit for a window with only a new tab"),
+  },
+  async ({ tabIds }) => {
+    const windowId = await browserApi.createWindow(tabIds);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            tabIds.length > 0
+              ? `Created window ${windowId} with tabs ${tabIds.join(", ")}`
+              : `Created window ${windowId} with a new tab`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "attach-tabs-to-parent",
+  "Attach one or more tabs as child tabs of a parent tab in the Tree Style Tab tree, re-parenting them from their current parent (e.g. to merge two tab trees into one group). Requires Tree Style Tab to be installed and enabled; the tabs and the parent tab must be in the same window. If an attach fails partway, the tabs that were already attached are restored to their previous position first, so the tab tree is not left partially re-parented.",
+  {
+    tabIds: z.array(z.number()),
+    parentTabId: z
+      .number()
+      .describe("The tab the given tabs become children of, e.g. a group tab"),
+  },
+  async ({ tabIds, parentTabId }) => {
+    await browserApi.attachTabsToParent(tabIds, parentTabId);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Attached tabs ${tabIds.join(", ")} to tab ${parentTabId}`,
         },
       ],
     };
@@ -293,8 +385,8 @@ mcpServer.connect(transport).catch((err) => {
   process.exit(1);
 });
 
-process.stdin.on("close", () => {
-  browserApi.close();
+process.stdin.on("close", async () => {
+  await browserApi.close();
   mcpServer.close();
   process.exit(0);
 });

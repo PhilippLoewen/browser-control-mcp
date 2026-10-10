@@ -5,11 +5,15 @@ export interface ServerMessageBase {
 export interface OpenTabServerMessage extends ServerMessageBase {
   cmd: "open-tab";
   url: string;
+  /** When Tree Style Tab is available, open the tab as a child of this tab. */
+  parentTabId?: number;
 }
 
 export interface CloseTabsServerMessage extends ServerMessageBase {
   cmd: "close-tabs";
   tabIds: number[];
+  /** When Tree Style Tab is available, keep the child tabs of the closed tabs. */
+  keepChildren?: boolean;
 }
 
 export interface GetTabListServerMessage extends ServerMessageBase {
@@ -46,6 +50,23 @@ export interface GroupTabsServerMessage extends ServerMessageBase {
   groupTitle: string;
 }
 
+export interface MoveTabsToWindowServerMessage extends ServerMessageBase {
+  cmd: "move-tabs-to-window";
+  tabIds: number[];
+  windowId: number;
+}
+
+export interface CreateWindowServerMessage extends ServerMessageBase {
+  cmd: "create-window";
+  tabIds: number[];
+}
+
+export interface AttachTabsToParentServerMessage extends ServerMessageBase {
+  cmd: "attach-tabs-to-parent";
+  tabIds: number[];
+  parentTabId: number;
+}
+
 export interface CaptureScreenshotServerMessage extends ServerMessageBase {
   cmd: "capture-screenshot";
   tabId: number;
@@ -63,6 +84,9 @@ export type ServerMessage =
   | ReorderTabsServerMessage
   | FindHighlightServerMessage
   | GroupTabsServerMessage
+  | MoveTabsToWindowServerMessage
+  | CreateWindowServerMessage
+  | AttachTabsToParentServerMessage
   | CaptureScreenshotServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

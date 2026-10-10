@@ -13,7 +13,10 @@ import {
   getAuditLog,
   clearAuditLog,
   getToolNameById,
+  getTstIntegrationMode,
+  setTstIntegrationMode,
 } from "./extension-config";
+import { TST_ADDON_ID, TST_REQUEST_TIMEOUT_MS } from "./tst-client";
 
 const secretDisplay = document.getElementById(
   "secret-display"
@@ -35,6 +38,12 @@ const domainStatusElement = document.getElementById(
 const portsInput = document.getElementById("ports-input") as HTMLInputElement;
 const savePortsButton = document.getElementById("save-ports") as HTMLButtonElement;
 const portsStatusElement = document.getElementById("ports-status") as HTMLDivElement;
+const tstModeAuto = document.getElementById("tst-mode-auto") as HTMLInputElement;
+const tstModeOff = document.getElementById("tst-mode-off") as HTMLInputElement;
+const saveTstModeButton = document.getElementById(
+  "save-tst-mode"
+) as HTMLButtonElement;
+const tstStatusElement = document.getElementById("tst-status") as HTMLDivElement;
 const auditLogContainer = document.getElementById("audit-log-container") as HTMLDivElement;
 const clearAuditLogButton = document.getElementById("clear-audit-log") as HTMLButtonElement;
 const auditLogStatusElement = document.getElementById("audit-log-status") as HTMLDivElement;
@@ -300,6 +309,101 @@ async function savePorts(event: MouseEvent) {
       portsStatusElement.textContent = "";
       portsStatusElement.style.color = "";
     }, 3000);
+  }
+}
+
+/**
+ * Loads the Tree Style Tab integration mode from storage and displays it
+ */
+async function loadTstIntegrationMode() {
+  try {
+    const mode = await getTstIntegrationMode();
+    tstModeAuto.checked = mode === "auto";
+    tstModeOff.checked = mode === "off";
+  } catch (error) {
+    console.error("Error loading Tree Style Tab integration mode:", error);
+    tstStatusElement.textContent =
+      "Error loading Tree Style Tab setting. Please check console for details.";
+    tstStatusElement.style.color = "red";
+    setTimeout(() => {
+      tstStatusElement.textContent = "";
+      tstStatusElement.style.color = "";
+    }, 3000);
+  }
+}
+
+/**
+ * Saves the Tree Style Tab integration mode to storage
+ */
+async function saveTstIntegrationMode(event: MouseEvent) {
+  if (!event.isTrusted) {
+    return;
+  }
+
+  try {
+    const mode = tstModeAuto.checked ? "auto" : "off";
+    await setTstIntegrationMode(mode);
+
+    // Show success message
+    tstStatusElement.textContent =
+      "Tree Style Tab setting saved! The background script applies it immediately.";
+    tstStatusElement.style.color = "#4caf50";
+    setTimeout(() => {
+      tstStatusElement.textContent = "";
+      tstStatusElement.style.color = "";
+    }, 3000);
+  } catch (error) {
+    console.error("Error saving Tree Style Tab integration mode:", error);
+    tstStatusElement.textContent = "Failed to save Tree Style Tab setting";
+    tstStatusElement.style.color = "red";
+    setTimeout(() => {
+      tstStatusElement.textContent = "";
+      tstStatusElement.style.color = "";
+    }, 3000);
+  }
+}
+
+/**
+ * Queries Tree Style Tab for its version to determine whether it is
+ * installed and enabled
+ */
+async function getTstVersion(): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Timed out")),
+      TST_REQUEST_TIMEOUT_MS
+    );
+  });
+  try {
+    const result = await Promise.race([
+      browser.runtime.sendMessage(TST_ADDON_ID, { type: "get-version" }),
+      timeout,
+    ]);
+    return typeof result === "string" ? result : null;
+  } catch {
+    return null;
+  } finally {
+    // Clear the timer so it does not outlive the race and reject an
+    // already-settled promise after a fast response.
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Shows the Tree Style Tab installation status
+ */
+async function updateTstStatus() {
+  const version = await getTstVersion();
+  if (version !== null) {
+    tstStatusElement.textContent = `Tree Style Tab is installed and enabled (version ${version}).`;
+    tstStatusElement.style.color = "#4caf50";
+  } else {
+    tstStatusElement.textContent =
+      "Tree Style Tab is not installed or not enabled. The standard browser tab APIs will be used.";
+    tstStatusElement.style.color = "";
   }
 }
 
@@ -578,12 +682,15 @@ function hidePermissionModal() {
 copyButton.addEventListener("click", copyToClipboard);
 saveDomainListsButton.addEventListener("click", saveDomainLists);
 savePortsButton.addEventListener("click", savePorts);
+saveTstModeButton.addEventListener("click", saveTstIntegrationMode);
 clearAuditLogButton.addEventListener("click", handleClearAuditLog);
 document.addEventListener("DOMContentLoaded", () => {
   loadSecret();
   createToolSettingsUI();
   loadDomainLists();
   loadPorts();
+  loadTstIntegrationMode();
+  updateTstStatus();
   loadAuditLog();
   initializeCollapsibleSections();
 

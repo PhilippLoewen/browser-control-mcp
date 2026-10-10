@@ -46,6 +46,21 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     description: "Allows the MCP server to reorder/group your browser tabs"
   },
   {
+    id: "move-tab-to-window",
+    name: "Move Tab to Window",
+    description: "Allows the MCP server to move browser tabs to a different window"
+  },
+  {
+    id: "create-window",
+    name: "Create Browser Window",
+    description: "Allows the MCP server to create new browser windows and move tabs into them"
+  },
+  {
+    id: "attach-tabs-to-parent",
+    name: "Attach Tabs to Parent Tab",
+    description: "Allows the MCP server to attach browser tabs as child tabs of another tab (Tree Style Tab)"
+  },
+  {
     id: "find-highlight-in-browser-tab",
     name: "Find and Highlight in Browser Tab",
     description: "Allows the MCP server to search for and highlight text in web pages"
@@ -65,6 +80,9 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "get-browser-recent-history": "get-recent-browser-history",
   "get-tab-content": "get-tab-web-content",
   "reorder-tabs": "reorder-browser-tabs",
+  "move-tabs-to-window": "move-tab-to-window",
+  "create-window": "create-window",
+  "attach-tabs-to-parent": "attach-tabs-to-parent",
   "find-highlight": "find-highlight-in-browser-tab",
   "group-tabs": "reorder-browser-tabs",
   "capture-screenshot": "capture-tab-screenshot",
@@ -90,7 +108,13 @@ export interface ExtensionConfig {
   domainDenyList?: string[];
   ports: number[];
   auditLog?: AuditLogEntry[];
+  tstIntegrationMode?: TstIntegrationMode;
 }
+
+// How the extension integrates with the Tree Style Tab add-on.
+// "auto" uses the TST API when TST is available and falls back to the
+// standard WebExtensions APIs otherwise; "off" never uses the TST API.
+export type TstIntegrationMode = "auto" | "off";
 
 /**
  * Gets the default tool settings (all enabled)
@@ -268,6 +292,34 @@ export async function getPorts(): Promise<number[]> {
 export async function setPorts(ports: number[]): Promise<void> {
   const config = await getConfig();
   config.ports = ports;
+  await saveConfig(config);
+}
+
+/**
+ * Gets the Tree Style Tab integration mode.
+ * @returns The current mode, "auto" when not explicitly set
+ */
+export async function getTstIntegrationMode(): Promise<TstIntegrationMode> {
+  const config = await getConfig();
+  return config.tstIntegrationMode ?? "auto";
+}
+
+/**
+ * Checks whether the Tree Style Tab integration is enabled
+ * @returns A Promise that resolves with true when the mode is "auto"
+ */
+export async function isTstIntegrationEnabled(): Promise<boolean> {
+  return (await getTstIntegrationMode()) === "auto";
+}
+
+/**
+ * Sets the Tree Style Tab integration mode
+ * @param mode The mode to set
+ * @returns A Promise that resolves when the setting is saved
+ */
+export async function setTstIntegrationMode(mode: TstIntegrationMode): Promise<void> {
+  const config = await getConfig();
+  config.tstIntegrationMode = mode;
   await saveConfig(config);
 }
 

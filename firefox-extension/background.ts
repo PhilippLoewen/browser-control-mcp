@@ -1,15 +1,20 @@
 import { WebsocketClient } from "./client";
 import { MessageHandler } from "./message-handler";
-import { getConfig, generateSecret } from "./extension-config";
+import {
+  getConfig,
+  generateSecret,
+  isTstIntegrationEnabled,
+} from "./extension-config";
+import { TstClient } from "./tst-client";
 import {
   grantCaptureConsent,
   revokeCaptureConsent,
   showConsentGrantedFeedback,
 } from "./capture-consent";
 
-function initClient(port: number, secret: string) {
+function initClient(port: number, secret: string, tstClient: TstClient) {
   const wsClient = new WebsocketClient(port, secret);
-  const messageHandler = new MessageHandler(wsClient);
+  const messageHandler = new MessageHandler(wsClient, tstClient);
 
   wsClient.connect();
 
@@ -77,8 +82,12 @@ initExtension()
       console.error("No ports configured in extension config");
       return;
     }
+    const tstClient = new TstClient(isTstIntegrationEnabled);
+    tstClient.init().catch((error) => {
+      console.error("Error initializing Tree Style Tab client:", error);
+    });
     for (const port of portList) {
-      initClient(port, secret);
+      initClient(port, secret, tstClient);
     }
     initCaptureConsentTracking();
     console.log("Browser extension initialized");

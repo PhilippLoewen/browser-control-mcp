@@ -17,6 +17,16 @@ export interface BrowserTab {
   url?: string;
   title?: string;
   lastAccessed?: number;
+  windowId?: number;
+  active?: boolean;
+  /** Tree Style Tab integration: depth of the tab in the tab tree (0 = root tab). */
+  depth?: number;
+  /** Tree Style Tab integration: the ID of the tab this tab is a child of. */
+  parentTabId?: number;
+  /** Tree Style Tab integration: number of child tabs (0 when the tab has no children). */
+  childCount?: number;
+  /** Tree Style Tab integration: whether the child tabs of this tab are currently hidden (collapsed tree). */
+  collapsed?: boolean;
 }
 
 export interface TabsExtensionMessage extends ExtensionMessageBase {
@@ -60,6 +70,24 @@ export interface TabGroupCreatedExtensionMessage extends ExtensionMessageBase {
   groupId: number;
 }
 
+export interface TabsMovedToWindowExtensionMessage extends ExtensionMessageBase {
+  resource: "tabs-moved-to-window";
+  tabIds: number[];
+  windowId: number;
+}
+
+export interface WindowCreatedExtensionMessage extends ExtensionMessageBase {
+  resource: "window-created";
+  windowId: number;
+  tabIds: number[];
+}
+
+export interface TabsAttachedToParentExtensionMessage extends ExtensionMessageBase {
+  resource: "tabs-attached-to-parent";
+  tabIds: number[];
+  parentTabId: number;
+}
+
 export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
   resource: "screenshot";
   tabId: number;
@@ -77,6 +105,9 @@ export type ExtensionMessage =
   | FindHighlightExtensionMessage
   | TabsClosedExtensionMessage
   | TabGroupCreatedExtensionMessage
+  | TabsMovedToWindowExtensionMessage
+  | WindowCreatedExtensionMessage
+  | TabsAttachedToParentExtensionMessage
   | ScreenshotExtensionMessage;
 
 export interface ExtensionError {

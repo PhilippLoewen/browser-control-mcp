@@ -23,6 +23,10 @@ const mockBrowser = {
   tabGroups: {
     update: jest.fn(),
   },
+  windows: {
+    create: jest.fn(),
+    remove: jest.fn(),
+  },
   history: {
     search: jest.fn(),
   },
@@ -35,12 +39,19 @@ const mockBrowser = {
         get: jest.fn(),
         set: jest.fn(),
     },
+    onChanged: {
+      addListener: jest.fn(),
+    },
   },
   permissions: {
     contains: jest.fn(),
   },
   runtime: {
     getURL: jest.fn(),
+    getManifest: jest.fn(),
+    sendMessage: jest.fn(),
+    reload: jest.fn(),
+    onMessageExternal: { addListener: jest.fn() },
   },
 };
 
