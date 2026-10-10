@@ -4,7 +4,9 @@
   "main": "dist/background.js",
   "scripts": {
     "build": "esbuild background.ts --bundle --outfile=dist/background.js && esbuild options.ts --bundle --outfile=dist/options.js",
-    "test": "jest"
+    "test": "jest",
+    "sign:local": "node scripts/self-sign.mjs",
+    "release:local": "node scripts/self-sign.mjs --upload --update-manifest"
   },
   "license": "MIT",
   "description": "Browser Control MCP Firefox Extension / Add-on",

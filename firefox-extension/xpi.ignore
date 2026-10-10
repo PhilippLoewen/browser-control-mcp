@@ -1,0 +1,24 @@
+# Exclusions for `web-ext build` / `web-ext sign` on this extension
+# (gitignore-style syntax; patterns without a slash match at any depth).
+# scripts/self-sign.mjs copies the extension to .sign-staging/ with these
+# exclusions and additionally passes this file via --ignore-files.
+node_modules/
+.git/
+__tests__/
+types/
+scripts/
+.sign-staging/
+web-ext-artifacts/
+.self-sign.json
+package.json
+package-lock.json
+tsconfig.json
+jest.config.js
+nx.json
+*.ts
+*.ts.map
+esbuild.config.*
+.env*
+.eslintrc*
+.prettierrc*
+README*
