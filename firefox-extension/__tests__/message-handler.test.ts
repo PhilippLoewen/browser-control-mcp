@@ -28,6 +28,7 @@ jest.mock("../tst-client", () => {
     moveTabToStart: jest.fn(),
     moveTabAfter: jest.fn(),
     removeTabsKeepingChildren: jest.fn(),
+    attachTabToParent: jest.fn(),
   };
   return {
     __esModule: true,
@@ -44,6 +45,7 @@ interface MockTstClient {
   moveTabToStart: jest.Mock;
   moveTabAfter: jest.Mock;
   removeTabsKeepingChildren: jest.Mock;
+  attachTabToParent: jest.Mock;
 }
 
 describe("MessageHandler", () => {
@@ -73,6 +75,7 @@ describe("MessageHandler", () => {
     mockTst.moveTabToStart.mockResolvedValue(true);
     mockTst.moveTabAfter.mockResolvedValue(true);
     mockTst.removeTabsKeepingChildren.mockResolvedValue(true);
+    mockTst.attachTabToParent.mockResolvedValue(true);
     tstHandler = new MessageHandler(
       mockClient,
       mockTst as unknown as TstClient
@@ -515,6 +518,131 @@ describe("MessageHandler", () => {
       });
     });
 
+    describe("move-tabs-to-window command", () => {
+      it("should move the given tabs to the target window and send confirmation", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "move-tabs-to-window",
+          tabIds: [123, 456],
+          windowId: 2,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.move).toHaveBeenCalledTimes(2);
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
+          windowId: 2,
+          index: -1,
+        });
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(2, 456, {
+          windowId: 2,
+          index: -1,
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tabs-moved-to-window",
+          correlationId: "test-correlation-id",
+          tabIds: [123, 456],
+          windowId: 2,
+        });
+      });
+    });
+
+    describe("attach-tabs-to-parent command", () => {
+      it("should attach the tabs via Tree Style Tab and send confirmation", async () => {
+        // Arrange
+        mockTst.isAvailable.mockReturnValue(true);
+
+        const request: ServerMessageRequest = {
+          cmd: "attach-tabs-to-parent",
+          tabIds: [123, 456],
+          parentTabId: 789,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act
+        await tstHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(mockTst.attachTabToParent).toHaveBeenCalledTimes(2);
+        expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(1, 123, 789);
+        expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(2, 456, 789);
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tabs-attached-to-parent",
+          correlationId: "test-correlation-id",
+          tabIds: [123, 456],
+          parentTabId: 789,
+        });
+      });
+
+      it("should reject when Tree Style Tab is not installed", async () => {
+        // Arrange (messageHandler has no TST client at all)
+        const request: ServerMessageRequest = {
+          cmd: "attach-tabs-to-parent",
+          tabIds: [123],
+          parentTabId: 789,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(
+          "Attaching tabs to a parent tab requires Tree Style Tab, which is not available"
+        );
+        expect(mockTst.attachTabToParent).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should reject when Tree Style Tab is unavailable", async () => {
+        // Arrange (TST client present but unavailable, as by default)
+        const request: ServerMessageRequest = {
+          cmd: "attach-tabs-to-parent",
+          tabIds: [123],
+          parentTabId: 789,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          tstHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(
+          "Attaching tabs to a parent tab requires Tree Style Tab, which is not available"
+        );
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should reject when Tree Style Tab refuses the attach", async () => {
+        // Arrange
+        mockTst.isAvailable.mockReturnValue(true);
+        // The first tab attaches fine, the second is refused (e.g. because
+        // it is in a different window).
+        mockTst.attachTabToParent
+          .mockResolvedValueOnce(true)
+          .mockResolvedValueOnce(false);
+
+        const request: ServerMessageRequest = {
+          cmd: "attach-tabs-to-parent",
+          tabIds: [123, 456],
+          parentTabId: 789,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          tstHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(
+          "Failed to attach tab 456 to tab 789 via Tree Style Tab"
+        );
+        expect(mockTst.attachTabToParent).toHaveBeenCalledTimes(2);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+    });
+
     describe("find-highlight command", () => {
       it("should find and highlight text in a tab", async () => {
         // Arrange
@@ -865,6 +993,7 @@ describe("MessageHandler", () => {
           // Arrange
           mockTst.isAvailable.mockReturnValue(true);
           mockTst.removeTabsKeepingChildren.mockResolvedValue(true);
+          mockTst.attachTabToParent.mockResolvedValue(true);
 
           const request: ServerMessageRequest = {
             cmd: "close-tabs",

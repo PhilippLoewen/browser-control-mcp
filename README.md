@@ -11,6 +11,8 @@ The MCP server supports the following tools:
 - Get the list of opened tabs
 - Create tab groups with name and color
 - Reorder opened tabs
+- Move open tabs to a different browser window
+- Attach tabs as child tabs of another tab (requires Tree Style Tab)
 - Read and search the browser's history
 - Read a webpage's text content and links (requires user consent)
 - Find and highlight text in a browser tab (requires user consent)
@@ -141,6 +143,8 @@ If you use the [Tree Style Tab](https://addons.mozilla.org/en-US/firefox/addon/t
 - **close-browser-tabs** — closing a tab with the `keepChildren` option keeps its child tabs open by promoting them, instead of closing the whole subtree.
 - **reorder-browser-tabs** — tabs are reordered within the tree, so each tab keeps its children with it.
 - **group-browser-tabs** — the group is created as a TST group tab, with the requested tabs as its children. Group color is not supported by TST's API and is ignored.
+- **move-tab-to-window** — moves the given tabs to a different window using the standard browser API (TST's move commands are limited to a single window). The child tabs of a moved tab stay in the source window; move the child tabs separately if needed.
+- **attach-tabs-to-parent** — attaches the given tabs as child tabs of a parent tab in the TST tree, re-parenting them from their current parent (e.g. to merge two tab trees into one group). The tabs and the parent tab must be in the same window.
 
-The integration is optional and automatic: without TST, or if TST is disabled at runtime, every tool falls back to the standard browser tab APIs and behaves exactly as before. If TST is started or re-enabled later, the extension detects it and switches over automatically. On the extension's preferences page you can turn the integration off entirely (under "Tree Style Tab Integration"), which also shows whether TST is currently detected.
+The integration is optional and automatic: without TST, or if TST is disabled at runtime, every tool falls back to the standard browser tab APIs and behaves exactly as before; the exception is attach-tabs-to-parent, which requires TST and reports an error when it is unavailable. If TST is started or re-enabled later, the extension detects it and switches over automatically. On the extension's preferences page you can turn the integration off entirely (under "Tree Style Tab Integration"), which also shows whether TST is currently detected.
 

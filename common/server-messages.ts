@@ -50,6 +50,18 @@ export interface GroupTabsServerMessage extends ServerMessageBase {
   groupTitle: string;
 }
 
+export interface MoveTabsToWindowServerMessage extends ServerMessageBase {
+  cmd: "move-tabs-to-window";
+  tabIds: number[];
+  windowId: number;
+}
+
+export interface AttachTabsToParentServerMessage extends ServerMessageBase {
+  cmd: "attach-tabs-to-parent";
+  tabIds: number[];
+  parentTabId: number;
+}
+
 export interface CaptureScreenshotServerMessage extends ServerMessageBase {
   cmd: "capture-screenshot";
   tabId: number;
@@ -67,6 +79,8 @@ export type ServerMessage =
   | ReorderTabsServerMessage
   | FindHighlightServerMessage
   | GroupTabsServerMessage
+  | MoveTabsToWindowServerMessage
+  | AttachTabsToParentServerMessage
   | CaptureScreenshotServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

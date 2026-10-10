@@ -70,6 +70,18 @@ export interface TabGroupCreatedExtensionMessage extends ExtensionMessageBase {
   groupId: number;
 }
 
+export interface TabsMovedToWindowExtensionMessage extends ExtensionMessageBase {
+  resource: "tabs-moved-to-window";
+  tabIds: number[];
+  windowId: number;
+}
+
+export interface TabsAttachedToParentExtensionMessage extends ExtensionMessageBase {
+  resource: "tabs-attached-to-parent";
+  tabIds: number[];
+  parentTabId: number;
+}
+
 export interface ScreenshotExtensionMessage extends ExtensionMessageBase {
   resource: "screenshot";
   tabId: number;
@@ -87,6 +99,8 @@ export type ExtensionMessage =
   | FindHighlightExtensionMessage
   | TabsClosedExtensionMessage
   | TabGroupCreatedExtensionMessage
+  | TabsMovedToWindowExtensionMessage
+  | TabsAttachedToParentExtensionMessage
   | ScreenshotExtensionMessage;
 
 export interface ExtensionError {

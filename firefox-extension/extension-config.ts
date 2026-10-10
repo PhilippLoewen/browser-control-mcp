@@ -46,6 +46,16 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     description: "Allows the MCP server to reorder/group your browser tabs"
   },
   {
+    id: "move-tab-to-window",
+    name: "Move Tab to Window",
+    description: "Allows the MCP server to move browser tabs to a different window"
+  },
+  {
+    id: "attach-tabs-to-parent",
+    name: "Attach Tabs to Parent Tab",
+    description: "Allows the MCP server to attach browser tabs as child tabs of another tab (Tree Style Tab)"
+  },
+  {
     id: "find-highlight-in-browser-tab",
     name: "Find and Highlight in Browser Tab",
     description: "Allows the MCP server to search for and highlight text in web pages"
@@ -65,6 +75,8 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "get-browser-recent-history": "get-recent-browser-history",
   "get-tab-content": "get-tab-web-content",
   "reorder-tabs": "reorder-browser-tabs",
+  "move-tabs-to-window": "move-tab-to-window",
+  "attach-tabs-to-parent": "attach-tabs-to-parent",
   "find-highlight": "find-highlight-in-browser-tab",
   "group-tabs": "reorder-browser-tabs",
   "capture-screenshot": "capture-tab-screenshot",
