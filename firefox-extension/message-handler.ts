@@ -8,6 +8,9 @@ import type { TstClient, TstTreeItem } from "./tst-client";
 // Time to let a newly foregrounded tab paint before capturing it
 const TAB_PAINT_DELAY_MS = 250;
 
+// Max time to wait for a reloaded (previously discarded) tab to finish loading
+const TAB_LOAD_TIMEOUT_MS = 10_000;
+
 export class MessageHandler {
   private client: WebsocketClient;
   private tst?: TstClient;
@@ -42,6 +45,9 @@ export class MessageHandler {
         break;
       case "get-tab-content":
         await this.sendTabsContent(req.correlationId, req.tabId, req.offset);
+        break;
+      case "load-tab":
+        await this.loadTab(req.correlationId, req.tabId);
         break;
       case "reorder-tabs":
         await this.reorderTabs(req.correlationId, req.tabOrder);
@@ -274,6 +280,7 @@ export class MessageHandler {
         lastAccessed: tab.lastAccessed,
         windowId: tab.windowId,
         active: tab.active,
+        discarded: tab.discarded,
         depth,
         parentTabId,
         childCount: item.children?.length ?? 0,
@@ -368,6 +375,68 @@ export class MessageHandler {
     }
   }
 
+  // Firefox unloads (discards) background tabs to free memory; such tabs
+  // must be reloaded before their content can be read. Reload the tab and
+  // wait until it reports its load status as "complete". The onUpdated
+  // listener is registered before the reload so the completion event
+  // cannot be missed.
+  private waitForTabComplete(
+    tabId: number,
+    timeoutMs: number
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      // Latches on the first settle, so a late timeout or reload error
+      // can never settle the promise a second time.
+      let settled = false;
+      const settle = (
+        error: unknown,
+        success: boolean
+      ): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        browser.tabs.onUpdated.removeListener(onComplete);
+        if (success) {
+          resolve();
+        } else {
+          reject(
+            error instanceof Error ? error : new Error(String(error))
+          );
+        }
+      };
+      const onComplete = (
+        updatedTabId: number,
+        changeInfo: { status?: string }
+      ): void => {
+        if (updatedTabId === tabId && changeInfo.status === "complete") {
+          settle(undefined, true);
+        }
+      };
+      const timeout = setTimeout(() => {
+        settle(
+          new Error(`Timed out waiting for tab ${tabId} to finish loading`),
+          false
+        );
+      }, timeoutMs);
+      browser.tabs.onUpdated.addListener(onComplete);
+      browser.tabs
+        .reload(tabId)
+        .catch((error: unknown) => settle(error, false));
+    });
+  }
+
+  private async loadTab(correlationId: string, tabId: number): Promise<void> {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.discarded) {
+      await this.waitForTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+    }
+    await this.client.sendResourceToServer({
+      resource: "tab-loaded",
+      correlationId,
+      tabId,
+    });
+  }
+
   private async sendTabsContent(
     correlationId: string,
     tabId: number,
@@ -379,6 +448,14 @@ export class MessageHandler {
     }
 
     await this.checkForUrlPermission(tab.url);
+
+    // A discarded (unloaded) tab has no content to read; reload it and
+    // wait for it to finish loading before running the extraction script.
+    let loaded = false;
+    if (tab.discarded) {
+      await this.waitForTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+      loaded = true;
+    }
 
     const MAX_CONTENT_LENGTH = 50_000;
     const results = await browser.tabs.executeScript(tabId, {
@@ -424,6 +501,8 @@ export class MessageHandler {
       fullText,
       links,
       totalLength,
+      // Only present when a discarded tab had to be reloaded to get its content.
+      ...(loaded ? { loaded: true } : {}),
     });
   }
 

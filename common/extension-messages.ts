@@ -10,6 +10,8 @@ export interface TabContentExtensionMessage extends ExtensionMessageBase {
   isTruncated: boolean;
   totalLength: number;
   links: { url: string; text: string }[];
+  /** Set when the tab was discarded (unloaded) and had to be reloaded to fetch its content. */
+  loaded?: boolean;
 }
 
 export interface BrowserTab {
@@ -19,6 +21,8 @@ export interface BrowserTab {
   lastAccessed?: number;
   windowId?: number;
   active?: boolean;
+  /** Whether the tab was discarded (unloaded) by the browser to free memory. */
+  discarded?: boolean;
   /** Tree Style Tab integration: depth of the tab in the tab tree (0 = root tab). */
   depth?: number;
   /** Tree Style Tab integration: the ID of the tab this tab is a child of. */
@@ -37,6 +41,11 @@ export interface TabsExtensionMessage extends ExtensionMessageBase {
 export interface OpenedTabIdExtensionMessage extends ExtensionMessageBase {
   resource: "opened-tab-id";
   tabId: number | undefined;
+}
+
+export interface TabLoadedExtensionMessage extends ExtensionMessageBase {
+  resource: "tab-loaded";
+  tabId: number;
 }
 
 export interface BrowserHistoryItem {
@@ -100,6 +109,7 @@ export type ExtensionMessage =
   | TabContentExtensionMessage
   | TabsExtensionMessage
   | OpenedTabIdExtensionMessage
+  | TabLoadedExtensionMessage
   | BrowserHistoryExtensionMessage
   | ReorderedTabsExtensionMessage
   | FindHighlightExtensionMessage

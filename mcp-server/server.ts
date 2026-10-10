@@ -61,7 +61,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "get-list-of-open-tabs",
-  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs. When Tree Style Tab is installed and enabled, tabs are listed in tree order, indented by their depth, with markers for the active tab, the number of child tabs, and collapsed subtrees (collapsed = the tab's child tabs are hidden). Each tab line includes the ID of the window the tab belongs to.",
+  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs. When Tree Style Tab is installed and enabled, tabs are listed in tree order, indented by their depth, with markers for the active tab, discarded (unloaded) tabs, the number of child tabs, and collapsed subtrees (collapsed = the tab's child tabs are hidden). Each tab line includes the ID of the window the tab belongs to.",
   {
     offset: z.number().int().min(0).default(0).describe("Starting index for pagination (0-based, must be >= 0)"),
     limit: z.number().default(100).describe("Maximum number of tabs to return (default: 100, max: 500)"),
@@ -97,6 +97,9 @@ mcpServer.tool(
       }
       if (tab.collapsed) {
         markers.push("[collapsed]");
+      }
+      if (tab.discarded) {
+        markers.push("[discarded]");
       }
       const markerSuffix = markers.length > 0 ? ` ${markers.join(" ")}` : "";
       return {
@@ -146,6 +149,7 @@ mcpServer.tool(
   `
     Get the full text content of the webpage and the list of links in the webpage, by tab ID. 
     Use "offset" only for larger documents when the first call was truncated and if you require more content in order to assist the user.
+    If the tab is discarded (unloaded), it is reloaded first and the response notes that.
   `,
   { tabId: z.number(), offset: z.number().default(0) },
   async ({ tabId, offset }) => {
@@ -165,19 +169,28 @@ mcpServer.tool(
 
     let text = content.fullText;
     let hint: { type: "text"; text: string }[] = [];
+    if (content.loaded) {
+      hint = [
+        {
+          type: "text",
+          text:
+            "Note: the tab was discarded (unloaded) and had to be reloaded before its content could be read. ",
+        },
+      ];
+    }
     if (content.isTruncated || offset > 0) {
       // If the content is truncated, add a "tip" suggesting
       // that another tool, search in page, can be used to
       // discover additional data.
       const rangeString = `${offset}-${offset + text.length}`;
-      hint = [
+      hint.push(
         {
           type: "text",
           text:
             `The following text content is truncated due to size (includes character range ${rangeString} out of ${content.totalLength}). ` +
             "If you want to read characters beyond this range, please use the 'get-tab-web-content' tool with an offset. ",
         },
-      ];
+      );
     }
 
     return {
@@ -367,6 +380,29 @@ mcpServer.tool(
           type: "image",
           data: screenshot.imageData,
           mimeType: screenshot.mimeType,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "load-browser-tab",
+  `
+    Load (restore) a browser tab, by tab ID.
+    Firefox unloads background tabs to free memory; such tabs are listed with a [discarded] marker
+    and cannot be read or searched until they are loaded again.
+    This tool reloads the tab and returns once it has finished loading.
+    Tabs that are not discarded are left untouched.
+  `,
+  { tabId: z.number() },
+  async ({ tabId }) => {
+    await browserApi.loadTab(tabId);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Tab ${tabId} is loaded`,
         },
       ],
     };

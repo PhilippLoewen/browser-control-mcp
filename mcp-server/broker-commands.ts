@@ -16,6 +16,9 @@ export const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 5000;
 // Capturing may foreground the tab, wait for it to paint, encode the image
 // and transfer a payload orders of magnitude larger than the other responses.
 export const SCREENSHOT_RESPONSE_TIMEOUT_MS = 10000;
+// Reloading a discarded tab requires the page to finish loading again
+// before the extension responds.
+export const TAB_LOAD_RESPONSE_TIMEOUT_MS = 15000;
 
 export type BrokerCommand = ServerMessage["cmd"];
 
@@ -34,6 +37,7 @@ type BrokerCommandResources = {
   "create-window": "window-created";
   "attach-tabs-to-parent": "tabs-attached-to-parent";
   "capture-screenshot": "screenshot";
+  "load-tab": "tab-loaded";
 } & Record<BrokerCommand, ExtensionMessage["resource"]>;
 
 export interface BrokerCommandSpec<Command extends BrokerCommand = BrokerCommand> {
@@ -127,6 +131,11 @@ export const BROKER_COMMANDS: {
         message.format === "png") &&
       (message.quality === undefined || isNumber(message.quality)) &&
       (message.scale === undefined || isNumber(message.scale)),
+  },
+  "load-tab": {
+    resource: "tab-loaded",
+    timeoutMs: TAB_LOAD_RESPONSE_TIMEOUT_MS,
+    validate: (message) => isNumber(message.tabId),
   },
 };
 

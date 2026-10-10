@@ -34,6 +34,7 @@ import {
   BROKER_COMMANDS,
   DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
   SCREENSHOT_RESPONSE_TIMEOUT_MS,
+  TAB_LOAD_RESPONSE_TIMEOUT_MS,
   TAB_LIST_RESPONSE_TIMEOUT_MS,
   TAB_STRUCTURE_RESPONSE_TIMEOUT_MS,
 } from "./broker-commands";
@@ -416,6 +417,14 @@ export class BrowserAPI {
       { cmd: "capture-screenshot", tabId, format, quality, scale },
       "screenshot",
       SCREENSHOT_RESPONSE_TIMEOUT_MS
+    );
+  }
+
+  async loadTab(tabId: number): Promise<void> {
+    await this.requestExtension(
+      { cmd: "load-tab", tabId },
+      "tab-loaded",
+      TAB_LOAD_RESPONSE_TIMEOUT_MS
     );
   }
 

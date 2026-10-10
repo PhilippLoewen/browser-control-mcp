@@ -75,6 +75,11 @@ export interface CaptureScreenshotServerMessage extends ServerMessageBase {
   scale?: number;
 }
 
+export interface LoadTabServerMessage extends ServerMessageBase {
+  cmd: "load-tab";
+  tabId: number;
+}
+
 export type ServerMessage =
   | OpenTabServerMessage
   | CloseTabsServerMessage
@@ -87,6 +92,7 @@ export type ServerMessage =
   | MoveTabsToWindowServerMessage
   | CreateWindowServerMessage
   | AttachTabsToParentServerMessage
-  | CaptureScreenshotServerMessage;
+  | CaptureScreenshotServerMessage
+  | LoadTabServerMessage;
 
 export type ServerMessageRequest = ServerMessage & { correlationId: string };

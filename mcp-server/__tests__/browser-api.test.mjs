@@ -57,6 +57,7 @@ test("a follower forwards every browser command", async () => {
       imageData: "aW1hZ2U=",
       mimeType: "image/png",
     });
+    await follower.loadTab(42);
   });
 });
 
@@ -411,6 +412,13 @@ function responseFor(request) {
         tabId: 42,
         imageData: "aW1hZ2U=",
         mimeType: "image/png",
+      };
+    case "load-tab":
+      assert.equal(request.tabId, 42);
+      return {
+        resource: "tab-loaded",
+        correlationId: request.correlationId,
+        tabId: 42,
       };
     default:
       throw new Error(`Unexpected browser command: ${request.cmd}`);

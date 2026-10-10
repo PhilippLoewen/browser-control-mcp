@@ -48,6 +48,22 @@ interface MockTstClient {
   attachTabToParent: jest.Mock;
 }
 
+/**
+ * Mock browser.tabs.reload so that the most recently registered
+ * onUpdated listener is immediately notified of a load "complete",
+ * the way a reloaded discarded tab reports it.
+ */
+function mockReloadCompletingLoad(tabId: number): void {
+  (browser.tabs.reload as jest.Mock).mockImplementation(() => {
+    const listeners = (
+      browser.tabs.onUpdated.addListener as jest.Mock
+    ).mock.calls;
+    const listener = listeners[listeners.length - 1][0];
+    listener(tabId, { status: "complete" });
+    return Promise.resolve();
+  });
+}
+
 describe("MessageHandler", () => {
   let messageHandler: MessageHandler;
   let mockClient: jest.Mocked<WebsocketClient>;
@@ -288,7 +304,11 @@ describe("MessageHandler", () => {
           correlationId: "test-correlation-id",
         };
 
-        const mockTabs = [{ id: 123, url: "https://example.com" }];
+        // A discarded (unloaded) tab is listed like any other; the flag
+        // flows through to the server untouched.
+        const mockTabs = [
+          { id: 123, url: "https://example.com", discarded: true },
+        ];
         (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
 
         // Act
@@ -432,6 +452,54 @@ describe("MessageHandler", () => {
           links: [{ url: "https://example.com/page", text: "Page" }],
           totalLength: 12,
         });
+        expect(browser.tabs.reload).not.toHaveBeenCalled();
+      });
+
+      it("should reload a discarded tab before fetching its content and report it", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+
+        const mockScriptResult = [
+          {
+            links: [{ url: "https://example.com/page", text: "Page" }],
+            fullText: "Page content",
+            isTruncated: false,
+            totalLength: 12,
+          },
+        ];
+        (browser.tabs.executeScript as jest.Mock).mockResolvedValue(
+          mockScriptResult
+        );
+        mockReloadCompletingLoad(123);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(browser.tabs.executeScript).toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+          isTruncated: false,
+          fullText: "Page content",
+          links: [{ url: "https://example.com/page", text: "Page" }],
+          totalLength: 12,
+          loaded: true,
+        });
       });
 
       it("should throw an error if tab URL domain is in deny list", async () => {
@@ -488,6 +556,86 @@ describe("MessageHandler", () => {
           messageHandler.handleDecodedMessage(request)
         ).rejects.toThrow();
         expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("load-tab command", () => {
+      it("should reload a discarded tab and confirm once it has loaded", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        mockReloadCompletingLoad(123);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-loaded",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+        });
+      });
+
+      it("should not reload a tab that is already loaded", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = { id: 123, url: "https://example.com" };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-loaded",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+        });
+      });
+
+      it("should throw an error if the tab does not exist", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockRejectedValue(
+          new Error("No such tab")
+        );
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("No such tab");
+        expect(browser.tabs.reload).not.toHaveBeenCalled();
+
+        // Mock implementations persist across tests in this suite
+        // (clearAllMocks only clears calls), so restore a resolved default
+        // for the tests that follow.
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+        });
       });
     });
 
@@ -1597,6 +1745,81 @@ describe("MessageHandler", () => {
                 active: false,
                 depth: 2,
                 parentTabId: 2,
+                childCount: 0,
+                collapsed: false,
+              },
+            ],
+          });
+        });
+
+        it("should carry the discarded flag into the tree list", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          const mockTabs = [
+            {
+              id: 1,
+              windowId: 1,
+              url: "https://a.com",
+              title: "A",
+              lastAccessed: 1000,
+              active: false,
+              discarded: false,
+            },
+            {
+              id: 2,
+              windowId: 1,
+              url: "https://b.com",
+              title: "B",
+              lastAccessed: 2000,
+              active: true,
+              discarded: true,
+            },
+          ];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+          mockTst.getLightTree.mockResolvedValue([
+            {
+              id: 1,
+              states: [],
+              children: [{ id: 2, states: [], children: [] }],
+            },
+          ]);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: [
+              {
+                id: 1,
+                url: "https://a.com",
+                title: "A",
+                lastAccessed: 1000,
+                windowId: 1,
+                active: false,
+                discarded: false,
+                depth: 0,
+                parentTabId: undefined,
+                childCount: 1,
+                collapsed: false,
+              },
+              {
+                id: 2,
+                url: "https://b.com",
+                title: "B",
+                lastAccessed: 2000,
+                windowId: 1,
+                active: true,
+                discarded: true,
+                depth: 1,
+                parentTabId: 1,
                 childCount: 0,
                 collapsed: false,
               },
