@@ -162,6 +162,24 @@ describe("TstClient", () => {
       await jest.advanceTimersByTimeAsync(30_000);
       expect(sendMessage.mock.calls.length).toBe(callCount);
     });
+
+    it("stops retrying when the integration is disabled in the meantime", async () => {
+      sendMessage.mockRejectedValue(new Error("no TST"));
+      await client.init();
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      // The user disables the integration while the retry timer is
+      // pending.
+      isEnabled.mockResolvedValue(false);
+
+      // The pending cycle sees the disabled setting, does not ping, and
+      // does not schedule another cycle.
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("commands", () => {

@@ -17,6 +17,7 @@ import {
   BROKER_PROTOCOL_VERSION,
   type BrokerIdentity,
   type BrokerInfo,
+  SOCKET_CLOSE_TIMEOUT_MS,
   clearBrokerInfo,
   createBrokerIdentity,
   createBrokerServer,
@@ -29,21 +30,23 @@ import {
   writeBrokerInfo,
 } from "./singleton-broker";
 
-const WS_DEFAULT_PORT = 8089;
-const EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
-// With Tree Style Tab available, fetching the tab list requires one TST
-// round trip per window, so it may take noticeably longer than the other
-// commands.
-const TAB_LIST_RESPONSE_TIMEOUT_MS = 5000;
+import {
+  BROKER_COMMANDS,
+  DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
+  SCREENSHOT_RESPONSE_TIMEOUT_MS,
+  TAB_LIST_RESPONSE_TIMEOUT_MS,
+  TAB_STRUCTURE_RESPONSE_TIMEOUT_MS,
+} from "./broker-commands";
 
-// Moving tabs across windows and attaching tabs in the Tree Style Tab
-// tree involve a round trip per tab, so allow more time than the default.
-const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 5000;
-// Capturing may foreground the tab, wait for it to paint, encode the image and transfer a
-// payload orders of magnitude larger than the other responses.
-const SCREENSHOT_RESPONSE_TIMEOUT_MS = 10000;
+const WS_DEFAULT_PORT = 8089;
 const BROKER_REQUEST_TIMEOUT_MS = 15000;
+// How long to wait at startup for an existing broker socket to appear.
 const BROKER_STARTUP_WAIT_MS = 1000;
+// How long to wait for the extension to reconnect after the broker was
+// recovered. The extension retries the connection at a fixed 2000 ms
+// interval (firefox-extension/client.ts), so the wait must cover a full
+// interval plus slack for the connection setup.
+const BROKER_RECOVERY_WAIT_MS = 3000;
 const BROKER_POLL_INTERVAL_MS = 25;
 
 interface ExtensionRequestResolver<T extends ExtensionMessage["resource"]> {
@@ -231,7 +234,7 @@ export class BrowserAPI {
       throw error;
     }
 
-    const deadline = Date.now() + BROKER_STARTUP_WAIT_MS;
+    const deadline = Date.now() + BROKER_RECOVERY_WAIT_MS;
     while (Date.now() < deadline) {
       if (this.ws?.readyState === WebSocket.OPEN) {
         return;
@@ -247,7 +250,17 @@ export class BrowserAPI {
     await Promise.all(
       this.wsServers.map(
         (wsServer) => new Promise<void>((resolve) => {
-          wsServer.close(() => resolve());
+          const timer = setTimeout(() => {
+            // Stuck connections would keep the server open; drop them so
+            // the pending close completes.
+            for (const client of wsServer.clients) {
+              client.terminate();
+            }
+          }, SOCKET_CLOSE_TIMEOUT_MS);
+          wsServer.close(() => {
+            clearTimeout(timer);
+            resolve();
+          });
         })
       )
     );
@@ -266,7 +279,14 @@ export class BrowserAPI {
             resolve();
             return;
           }
-          socket.once("close", resolve);
+          const timer = setTimeout(() => {
+            // The peer never confirmed the close; drop the socket.
+            socket.terminate();
+          }, SOCKET_CLOSE_TIMEOUT_MS);
+          socket.once("close", () => {
+            clearTimeout(timer);
+            resolve();
+          });
           socket.close(1001, "browser-control broker shutting down");
         })
       )
@@ -434,7 +454,7 @@ export class BrowserAPI {
   private async requestExtension<T extends ExtensionMessage["resource"]>(
     message: ServerMessage,
     resource: T,
-    timeoutMs: number = EXTENSION_RESPONSE_TIMEOUT_MS,
+    timeoutMs: number = DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
     allowRecovery: boolean = true
   ): Promise<Extract<ExtensionMessage, { resource: T }>> {
     if (!this.brokerServer) {
@@ -473,52 +493,15 @@ export class BrowserAPI {
   private async handleBrokerMessage(
     message: ServerMessage
   ): Promise<ExtensionMessage> {
-    switch (message.cmd) {
-      case "open-tab":
-        return await this.requestExtension(message, "opened-tab-id");
-      case "close-tabs":
-        return await this.requestExtension(message, "tabs-closed");
-      case "get-tab-list":
-        return await this.requestExtension(message, "tabs");
-      case "get-browser-recent-history":
-        return await this.requestExtension(message, "history");
-      case "get-tab-content":
-        return await this.requestExtension(message, "tab-content");
-      case "reorder-tabs":
-        return await this.requestExtension(message, "tabs-reordered");
-      case "find-highlight":
-        return await this.requestExtension(message, "find-highlight-result");
-      case "group-tabs":
-        return await this.requestExtension(message, "new-tab-group");
-      case "move-tabs-to-window":
-        return await this.requestExtension(
-          message,
-          "tabs-moved-to-window",
-          TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
-        );
-      case "create-window":
-        return await this.requestExtension(
-          message,
-          "window-created",
-          TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
-        );
-      case "attach-tabs-to-parent":
-        return await this.requestExtension(
-          message,
-          "tabs-attached-to-parent",
-          TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
-        );
-      case "capture-screenshot":
-        return await this.requestExtension(
-          message,
-          "screenshot",
-          SCREENSHOT_RESPONSE_TIMEOUT_MS
-        );
-      default: {
-        const exhaustiveCheck: never = message;
-        throw new Error(`Unsupported broker command: ${exhaustiveCheck}`);
-      }
+    const spec = BROKER_COMMANDS[message.cmd];
+    if (!spec) {
+      throw new Error(`Unsupported broker command: ${message.cmd}`);
     }
+    return await this.requestExtension(
+      message,
+      spec.resource,
+      spec.timeoutMs
+    );
   }
 
   private handleDecodedExtensionMessage(decoded: ExtensionMessage) {
@@ -542,7 +525,7 @@ export class BrowserAPI {
   private async waitForResponse<T extends ExtensionMessage["resource"]>(
     correlationId: string,
     resource: T,
-    timeoutMs: number = EXTENSION_RESPONSE_TIMEOUT_MS
+    timeoutMs: number = DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS
   ): Promise<Extract<ExtensionMessage, { resource: T }>> {
     return new Promise<Extract<ExtensionMessage, { resource: T }>>(
       (resolve, reject) => {

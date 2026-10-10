@@ -6,7 +6,14 @@ import path from "node:path";
 
 import type { ExtensionMessage, ServerMessage } from "@browser-control-mcp/common";
 
+import { BROKER_COMMANDS, getBrokerCommand } from "./broker-commands";
+
 export const BROKER_PROTOCOL_VERSION = 1;
+
+// How long to wait for broker and WebSocket connections to shut down
+// cleanly before the remaining sockets are dropped, so a stuck peer
+// cannot hang the shutdown.
+export const SOCKET_CLOSE_TIMEOUT_MS = 1000;
 
 export interface BrokerIdentity {
   id: string;
@@ -36,21 +43,6 @@ interface BrokerResponse {
   result?: ExtensionMessage | "pong";
   error?: string;
 }
-
-const BROKER_COMMANDS = new Set([
-  "open-tab",
-  "close-tabs",
-  "get-tab-list",
-  "get-browser-recent-history",
-  "get-tab-content",
-  "reorder-tabs",
-  "find-highlight",
-  "group-tabs",
-  "move-tabs-to-window",
-  "create-window",
-  "attach-tabs-to-parent",
-  "capture-screenshot",
-]);
 
 export function createBrokerIdentity(options: {
   port: number;
@@ -154,12 +146,19 @@ export function createBrokerServer(options: {
   handleMessage: (message: ServerMessage) => Promise<ExtensionMessage>;
 }) {
   let server: net.Server | null = null;
+  // The open broker connections, so close() can drop the ones a stuck
+  // peer is holding open.
+  const openSockets = new Set<net.Socket>();
 
   return {
     async start(): Promise<void> {
       ensureBrokerDirectory();
 
       server = net.createServer((socket) => {
+        openSockets.add(socket);
+        socket.on("close", () => {
+          openSockets.delete(socket);
+        });
         let data = "";
         socket.on("data", (chunk) => {
           data += chunk.toString();
@@ -248,7 +247,21 @@ export function createBrokerServer(options: {
         return;
       }
       await new Promise<void>((resolve, reject) => {
-        server?.close((error) => (error ? reject(error) : resolve()));
+        const timer = setTimeout(() => {
+          // Stuck connections would keep the server open; drop them so
+          // the pending close completes.
+          for (const socket of openSockets) {
+            socket.destroy();
+          }
+        }, SOCKET_CLOSE_TIMEOUT_MS);
+        server?.close((error) => {
+          clearTimeout(timer);
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
       });
       if (process.platform !== "win32") {
         try {
@@ -273,61 +286,15 @@ function getCommand(message: unknown): unknown {
 }
 
 function isAllowedBrokerCommand(message: unknown): boolean {
-  const command = getCommand(message);
-  return typeof command === "string" && BROKER_COMMANDS.has(command);
+  return getBrokerCommand(message) !== undefined;
 }
 
 function isBrokerMessage(message: unknown): message is ServerMessage {
-  if (typeof message !== "object" || message === null) {
+  const command = getBrokerCommand(message);
+  if (command === undefined) {
     return false;
   }
-  const value = message as Record<string, unknown>;
-  switch (value.cmd) {
-    case "open-tab":
-      return typeof value.url === "string";
-    case "close-tabs":
-      return isNumberArray(value.tabIds);
-    case "get-tab-list":
-      return true;
-    case "get-browser-recent-history":
-      return value.searchQuery === undefined ||
-        typeof value.searchQuery === "string";
-    case "get-tab-content":
-      return isNumber(value.tabId) &&
-        (value.offset === undefined || isNumber(value.offset));
-    case "reorder-tabs":
-      return isNumberArray(value.tabOrder);
-    case "find-highlight":
-      return isNumber(value.tabId) && typeof value.queryPhrase === "string";
-    case "group-tabs":
-      return isNumberArray(value.tabIds) &&
-        typeof value.isCollapsed === "boolean" &&
-        typeof value.groupColor === "string" &&
-        typeof value.groupTitle === "string";
-    case "move-tabs-to-window":
-      return isNumberArray(value.tabIds) && isNumber(value.windowId);
-    case "create-window":
-      return isNumberArray(value.tabIds);
-    case "attach-tabs-to-parent":
-      return isNumberArray(value.tabIds) && isNumber(value.parentTabId);
-    case "capture-screenshot":
-      return isNumber(value.tabId) &&
-        (value.format === undefined ||
-          value.format === "jpeg" ||
-          value.format === "png") &&
-        (value.quality === undefined || isNumber(value.quality)) &&
-        (value.scale === undefined || isNumber(value.scale));
-    default:
-      return false;
-  }
-}
-
-function isNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isNumberArray(value: unknown): value is number[] {
-  return Array.isArray(value) && value.every(isNumber);
+  return BROKER_COMMANDS[command].validate(message as Record<string, unknown>);
 }
 
 export async function pingBroker(options: {

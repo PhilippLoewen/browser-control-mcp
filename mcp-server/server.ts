@@ -280,7 +280,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "create-window",
-  "Create a new browser window, optionally moving the given tabs into it in the given order. If no tabs are given, the window opens with a single new tab. If tabs are given, the window's own default tab is closed so it contains exactly the moved tabs. Returns the ID of the new window. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
+  "Create a new browser window, optionally moving the given tabs into it in the given order. If no tabs are given, the window opens with a single new tab. If tabs are given, the window's own default tab is closed so it contains exactly the moved tabs. Returns the ID of the new window. If a move fails, the already-moved tabs are restored to their original windows and the new window is closed; if a tab cannot be restored, the new window is left open and its ID is reported in the error. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
   {
     tabIds: z
       .array(z.number())
@@ -305,7 +305,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "attach-tabs-to-parent",
-  "Attach one or more tabs as child tabs of a parent tab in the Tree Style Tab tree, re-parenting them from their current parent (e.g. to merge two tab trees into one group). Requires Tree Style Tab to be installed and enabled; the tabs and the parent tab must be in the same window.",
+  "Attach one or more tabs as child tabs of a parent tab in the Tree Style Tab tree, re-parenting them from their current parent (e.g. to merge two tab trees into one group). Requires Tree Style Tab to be installed and enabled; the tabs and the parent tab must be in the same window. If an attach fails partway, the tabs that were already attached are restored to their previous position first, so the tab tree is not left partially re-parented.",
   {
     tabIds: z.array(z.number()),
     parentTabId: z

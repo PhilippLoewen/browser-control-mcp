@@ -46,6 +46,9 @@ test("a follower forwards every browser command", async () => {
     assert.deepEqual(await follower.reorderTabs([42, 7]), [7, 42]);
     assert.equal(await follower.findHighlight(42, "needle"), 2);
     assert.equal(await follower.groupTabs([42], false, "blue", "Group"), 9);
+    await follower.moveTabsToWindow([42], 3);
+    assert.equal(await follower.createWindow([42, 7]), 5);
+    await follower.attachTabsToParent([7], 42);
     const screenshot = await follower.captureScreenshot(42, "png", 100, 1);
     assert.deepEqual({ ...screenshot, correlationId: "ignored" }, {
       resource: "screenshot",
@@ -55,6 +58,67 @@ test("a follower forwards every browser command", async () => {
       mimeType: "image/png",
     });
   });
+});
+
+test("a brokered get-tab-list waits for the extended tab list budget", async () => {
+  const port = await getFreePort();
+  const secret = `secret-${port}`;
+  const cacheDirectory = createCacheDirectory();
+  const previousEnvironment = setEnvironment({
+    EXTENSION_PORT: String(port),
+    EXTENSION_SECRET: secret,
+    XDG_CACHE_HOME: cacheDirectory,
+  });
+  const identity = broker.createBrokerIdentity({ port, extensionSecret: secret });
+  const leader = new BrowserAPI();
+  let extension;
+
+  try {
+    await leader.init();
+    extension = new WebSocket(`ws://127.0.0.1:${port}`);
+    extension.on("message", (rawMessage) => {
+      const request = JSON.parse(rawMessage.toString());
+      assert.equal(request.signature, sign(request.payload, secret));
+      assert.equal(request.payload.cmd, "get-tab-list");
+      const payload = {
+        resource: "tabs",
+        correlationId: request.payload.correlationId,
+        tabs: [{ id: 42, url: "https://example.com", title: "Example" }],
+      };
+      // With Tree Style Tab, fetching the tab list needs one round trip per
+      // window, so the extension answers after the default 1000 ms budget.
+      // A response this late only succeeds if the leader's broker path uses
+      // the extended 5000 ms tab list budget.
+      setTimeout(() => {
+        extension.send(
+          JSON.stringify({ payload, signature: sign(payload, secret) })
+        );
+      }, 1200);
+    });
+    await new Promise((resolve, reject) => {
+      extension.once("open", resolve);
+      extension.once("error", reject);
+    });
+
+    const brokerInfo = broker.readBrokerInfo(identity);
+    assert.ok(brokerInfo);
+    const response = await broker.forwardToBroker({
+      socketPath: brokerInfo.socketPath,
+      token: brokerInfo.token,
+      message: { cmd: "get-tab-list" },
+      timeoutMs: 5000,
+    });
+    assert.deepEqual({ ...response, correlationId: "ignored" }, {
+      resource: "tabs",
+      correlationId: "ignored",
+      tabs: [{ id: 42, url: "https://example.com", title: "Example" }],
+    });
+  } finally {
+    await closeWebSocket(extension);
+    await leader.close();
+    restoreEnvironment(previousEnvironment);
+    fs.rmSync(cacheDirectory, { recursive: true, force: true });
+  }
 });
 
 test("BrowserAPI waits for a broker that is still starting", async () => {
@@ -325,6 +389,17 @@ function responseFor(request) {
       assert.deepEqual(request.tabIds, [42]);
       assert.equal(request.groupTitle, "Group");
       return { resource: "new-tab-group", correlationId: request.correlationId, groupId: 9 };
+    case "move-tabs-to-window":
+      assert.deepEqual(request.tabIds, [42]);
+      assert.equal(request.windowId, 3);
+      return { resource: "tabs-moved-to-window", correlationId: request.correlationId };
+    case "create-window":
+      assert.deepEqual(request.tabIds, [42, 7]);
+      return { resource: "window-created", correlationId: request.correlationId, windowId: 5 };
+    case "attach-tabs-to-parent":
+      assert.deepEqual(request.tabIds, [7]);
+      assert.equal(request.parentTabId, 42);
+      return { resource: "tabs-attached-to-parent", correlationId: request.correlationId };
     case "capture-screenshot":
       assert.equal(request.tabId, 42);
       assert.equal(request.format, "png");

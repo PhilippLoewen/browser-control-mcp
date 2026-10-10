@@ -452,8 +452,13 @@ export class MessageHandler {
 
   /**
    * Reorder the tabs using Tree Style Tab's move commands, which move a tab
-   * together with its child tabs. Returns true when the reorder was applied.
-   * Falls back to false when TST is unavailable or any of the commands fails.
+   * together with its child tabs. Returns true when the reorder was applied
+   * and false when no TST move was applied yet (TST unavailable, tabs in
+   * different windows, the first move failed), so the caller can fall back
+   * to the standard API. Throws when a move fails after earlier moves were
+   * already applied: the tab tree was partially reordered by TST at that
+   * point, and moving the tabs via the standard API on top of it would fight
+   * TST's tree autofixing, so the partial order is left in place instead.
    */
   private async reorderTabsViaTst(tabOrder: number[]): Promise<boolean> {
     const tst = this.tst;
@@ -461,6 +466,7 @@ export class MessageHandler {
       return false;
     }
 
+    let applied = 0;
     try {
       // TST's move commands only work within a single window.
       const windowIds = new Set<number>();
@@ -478,16 +484,31 @@ export class MessageHandler {
       if (!(await tst.moveTabToStart(tabOrder[0]))) {
         return false;
       }
+      applied = 1;
       for (let i = 1; i < tabOrder.length; i++) {
         if (!(await tst.moveTabAfter(tabOrder[i], tabOrder[i - 1]))) {
-          return false;
+          break;
         }
+        applied++;
       }
-      return true;
+      if (applied === tabOrder.length) {
+        return true;
+      }
     } catch (error) {
       console.error("Failed to reorder tabs via Tree Style Tab:", error);
+    }
+
+    if (applied === 0) {
+      // No TST move was applied, so the standard API fallback cannot
+      // conflict with TST's tree.
       return false;
     }
+    throw new Error(
+      `Reordering tabs via Tree Style Tab failed after ${applied} of ` +
+        `${tabOrder.length} moves were applied; the partial order was left ` +
+        `in place because the standard API fallback would conflict with ` +
+        `Tree Style Tab's tree`
+    );
   }
 
   /**
@@ -522,8 +543,16 @@ export class MessageHandler {
    * new tab that Firefox opens by default. Firefox opens every new window
    * with a single default tab, so when tabs are given that default tab is
    * closed again after the moves, leaving exactly the given tabs behind.
-   * If moving a tab fails, the new window is removed again so no
-   * half-filled window is left behind.
+   *
+   * If a move fails partway through, the tabs that were already moved
+   * into the new window are moved back to their original window and
+   * index first (in reverse order, best effort per tab) and only then is
+   * the new window removed, so no user tab is lost. If a tab cannot be
+   * moved back (e.g. its original window is gone), the new window is kept
+   * open instead — closing it would close those tabs as well, since
+   * Firefox closes a window together with all of its tabs — and the
+   * rethrown error carries the original failure and the new window ID so
+   * the caller knows where the tabs ended up.
    */
   private async createWindow(
     correlationId: string,
@@ -535,6 +564,14 @@ export class MessageHandler {
       throw new Error("Failed to create window: no window ID returned");
     }
     let defaultTabId: number | undefined;
+    // Original window and index of every tab about to be moved, so the
+    // tabs that are already in the new window can be moved back there
+    // again when a later move fails.
+    const originalPositions = new Map<
+      number,
+      { windowId: number; index: number }
+    >();
+    const movedTabIds: number[] = [];
     try {
       // Firefox opens every new window with a single default tab. Remember
       // it now, before any of the given tabs are moved in, so it can be
@@ -544,9 +581,26 @@ export class MessageHandler {
         if (initialTabs.length === 1) {
           defaultTabId = initialTabs[0].id;
         }
+        // Snapshot the current position of the requested tabs with a
+        // single query for all tabs (each Tab carries windowId and
+        // index).
+        const allTabs = await browser.tabs.query({});
+        for (const tab of allTabs) {
+          if (
+            tab.id !== undefined &&
+            tab.windowId !== undefined &&
+            tabIds.includes(tab.id)
+          ) {
+            originalPositions.set(tab.id, {
+              windowId: tab.windowId,
+              index: tab.index,
+            });
+          }
+        }
       }
       for (const tabId of tabIds) {
         await browser.tabs.move(tabId, { windowId, index: -1 });
+        movedTabIds.push(tabId);
       }
       if (defaultTabId !== undefined) {
         await browser.tabs.remove(defaultTabId).catch(() => {
@@ -555,6 +609,54 @@ export class MessageHandler {
         });
       }
     } catch (error) {
+      // A move failed while some tabs are already in the new window.
+      // Firefox's windows.remove closes a window together with all of
+      // its tabs, so the moved tabs are moved back to their original
+      // window and index first (in reverse order so the indices line up
+      // again), and only then is the window removed.
+      let allRestored = true;
+      for (const tabId of [...movedTabIds].reverse()) {
+        const original = originalPositions.get(tabId);
+        if (!original) {
+          // Should not happen (the snapshot precedes the moves), but
+          // with no known original position the tab must not be lost by
+          // closing the new window either.
+          console.error(
+            `No original position recorded for tab ${tabId}; it cannot ` +
+              `be restored to its original window`
+          );
+          allRestored = false;
+          continue;
+        }
+        try {
+          await browser.tabs.move(tabId, {
+            windowId: original.windowId,
+            index: original.index,
+          });
+        } catch (restoreError) {
+          console.error(
+            `Failed to move tab ${tabId} back to window ` +
+              `${original.windowId} at index ${original.index}:`,
+            restoreError
+          );
+          allRestored = false;
+        }
+      }
+      if (!allRestored) {
+        // The moved tabs are still in the new window and could not be
+        // restored; keep the window open so they are not closed, and
+        // report where they are.
+        const originalMessage =
+          error instanceof Error ? error.message : String(error);
+        console.error(
+          `Could not restore the moved tabs after: ${originalMessage}; ` +
+            `keeping the new window ${windowId} open`
+        );
+        throw new Error(
+          `Could not restore the moved tabs after: ${originalMessage}; ` +
+            `the moved tabs are in the new window ${windowId}`
+        );
+      }
       console.error(
         "Failed to populate the new window, removing the window:",
         error
@@ -578,6 +680,15 @@ export class MessageHandler {
    * Style Tab tree, re-parenting them from their current parent.
    * Requires Tree Style Tab: the standard WebExtensions API has no
    * equivalent. The tabs and the parent tab must be in the same window.
+   *
+   * If an attach fails partway through, the tabs that were already
+   * attached are re-attached to their original parent first (in reverse
+   * order, best effort per tab) so the tree is not left partially
+   * re-parented. A tab at the root level of its window has no parent to
+   * re-attach to, so it is moved to the start of the window instead (root
+   * level again, though possibly a different position). If a tab cannot
+   * be restored, the rethrown error notes that the tree may be partially
+   * re-parented.
    */
   private async attachTabsToParent(
     correlationId: string,
@@ -590,13 +701,61 @@ export class MessageHandler {
         "Attaching tabs to a parent tab requires Tree Style Tab, which is not available"
       );
     }
-    for (const tabId of tabIds) {
-      if (!(await tst.attachTabToParent(tabId, parentTabId))) {
+    // Original parent of every tab about to be moved, so the tabs that were
+    // already attached can be re-attached to it when a later attach fails.
+    const originalParents = await this.snapshotTabParents(tabIds);
+    let attachedCount = 0;
+    try {
+      for (const tabId of tabIds) {
+        if (!(await tst.attachTabToParent(tabId, parentTabId))) {
+          throw new Error(
+            `Failed to attach tab ${tabId} to tab ${parentTabId} via Tree Style Tab ` +
+              "(both tabs must exist and be in the same window)"
+          );
+        }
+        attachedCount++;
+      }
+    } catch (error) {
+      // An attach failed while some tabs are already children of the new
+      // parent. Re-attach them to their original parent first (in reverse
+      // order so the tree returns to a consistent state, best effort per
+      // tab).
+      let allRestored = true;
+      for (let i = attachedCount - 1; i >= 0; i--) {
+        const tabId = tabIds[i];
+        const originalParent = originalParents.get(tabId);
+        const restored =
+          originalParent !== undefined
+            ? await tst.attachTabToParent(tabId, originalParent)
+            : await tst.moveTabToStart(tabId);
+        if (!restored) {
+          console.error(
+            `Failed to restore tab ${tabId} to its original position after: ` +
+              (error instanceof Error ? error.message : String(error))
+          );
+          allRestored = false;
+        }
+      }
+      if (!allRestored) {
+        const originalMessage =
+          error instanceof Error ? error.message : String(error);
+        console.error(
+          `Could not restore the attached tabs after: ${originalMessage}; ` +
+            `the tab tree may be partially re-parented`
+        );
         throw new Error(
-          `Failed to attach tab ${tabId} to tab ${parentTabId} via Tree Style Tab ` +
-            "(both tabs must exist and be in the same window)"
+          `Could not restore the attached tabs after: ${originalMessage}; ` +
+            `the tab tree may be partially re-parented`
         );
       }
+      if (attachedCount > 0) {
+        console.error(
+          `Failed to attach tabs to a parent, restoring ` +
+            `${attachedCount} already-attached tab(s):`,
+          error
+        );
+      }
+      throw error;
     }
     await this.client.sendResourceToServer({
       resource: "tabs-attached-to-parent",
@@ -604,6 +763,53 @@ export class MessageHandler {
       tabIds,
       parentTabId,
     });
+  }
+
+  /**
+   * Map the given tabs to the tab they are currently children of in the
+   * Tree Style Tab tree. Tabs at the root level of their window, and tabs
+   * that cannot be located in the tree, are left out of the map.
+   */
+  private async snapshotTabParents(
+    tabIds: number[]
+  ): Promise<Map<number, number>> {
+    const wanted = new Set(tabIds);
+    const parents = new Map<number, number>();
+    if (wanted.size === 0) {
+      return parents;
+    }
+
+    // The light tree is per window, so first find the windows of the tabs
+    // with a single query for all tabs.
+    const allTabs = await browser.tabs.query({});
+    const windowIds = new Set<number>();
+    for (const tab of allTabs) {
+      if (
+        tab.id !== undefined &&
+        tab.windowId !== undefined &&
+        wanted.has(tab.id)
+      ) {
+        windowIds.add(tab.windowId);
+      }
+    }
+    for (const windowId of windowIds) {
+      const tree = await this.tst?.getLightTree(windowId);
+      if (!tree) {
+        continue;
+      }
+      const visit = (item: TstTreeItem, parent: number | undefined): void => {
+        if (wanted.has(item.id) && parent !== undefined) {
+          parents.set(item.id, parent);
+        }
+        for (const child of item.children ?? []) {
+          visit(child, item.id);
+        }
+      };
+      for (const item of tree) {
+        visit(item, undefined);
+      }
+    }
+    return parents;
   }
 
   private async findAndHighlightText(
