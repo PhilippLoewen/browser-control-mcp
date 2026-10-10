@@ -175,6 +175,7 @@ describe("TstClient", () => {
       expect(await client.moveTabToStart(1)).toBe(false);
       expect(await client.moveTabAfter(1, 2)).toBe(false);
       expect(await client.removeTabsKeepingChildren([1])).toBe(false);
+      expect(await client.attachTabToParent(1, 2)).toBe(false);
       // Only the initial ping was sent.
       expect(sendMessage).toHaveBeenCalledTimes(1);
     });
@@ -242,6 +243,7 @@ describe("TstClient", () => {
         .mockResolvedValueOnce(true)
         .mockResolvedValueOnce(true)
         .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true)
         .mockResolvedValueOnce(true);
       await client.init();
 
@@ -272,6 +274,13 @@ describe("TstClient", () => {
         type: "remove-tab-keeping-children",
         tabs: [1, 2],
         method: "promote-all",
+      });
+
+      expect(await client.attachTabToParent(3, 1)).toBe(true);
+      expect(sendMessage).toHaveBeenLastCalledWith(TST_ADDON_ID, {
+        type: "attach",
+        child: 3,
+        parent: 1,
       });
     });
 

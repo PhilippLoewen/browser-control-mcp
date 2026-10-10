@@ -35,6 +35,10 @@ const EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
 // round trip per window, so it may take noticeably longer than the other
 // commands.
 const TAB_LIST_RESPONSE_TIMEOUT_MS = 5000;
+
+// Moving tabs across windows and attaching tabs in the Tree Style Tab
+// tree involve a round trip per tab, so allow more time than the default.
+const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 5000;
 // Capturing may foreground the tab, wait for it to paint, encode the image and transfer a
 // payload orders of magnitude larger than the other responses.
 const SCREENSHOT_RESPONSE_TIMEOUT_MS = 10000;
@@ -354,6 +358,25 @@ export class BrowserAPI {
     return message.groupId;
   }
 
+  async moveTabsToWindow(tabIds: number[], windowId: number): Promise<void> {
+    await this.requestExtension(
+      { cmd: "move-tabs-to-window", tabIds, windowId },
+      "tabs-moved-to-window",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+    );
+  }
+
+  async attachTabsToParent(
+    tabIds: number[],
+    parentTabId: number
+  ): Promise<void> {
+    await this.requestExtension(
+      { cmd: "attach-tabs-to-parent", tabIds, parentTabId },
+      "tabs-attached-to-parent",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+    );
+  }
+
   async captureScreenshot(
     tabId: number,
     format: "jpeg" | "png",
@@ -458,6 +481,18 @@ export class BrowserAPI {
         return await this.requestExtension(message, "find-highlight-result");
       case "group-tabs":
         return await this.requestExtension(message, "new-tab-group");
+      case "move-tabs-to-window":
+        return await this.requestExtension(
+          message,
+          "tabs-moved-to-window",
+          TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+        );
+      case "attach-tabs-to-parent":
+        return await this.requestExtension(
+          message,
+          "tabs-attached-to-parent",
+          TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+        );
       case "capture-screenshot":
         return await this.requestExtension(
           message,

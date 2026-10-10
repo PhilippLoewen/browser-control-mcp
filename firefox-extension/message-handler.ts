@@ -62,6 +62,20 @@ export class MessageHandler {
           req.groupTitle
         );
         break;
+      case "move-tabs-to-window":
+        await this.moveTabsToWindow(
+          req.correlationId,
+          req.tabIds,
+          req.windowId
+        );
+        break;
+      case "attach-tabs-to-parent":
+        await this.attachTabsToParent(
+          req.correlationId,
+          req.tabIds,
+          req.parentTabId
+        );
+        break;
       case "capture-screenshot":
         await this.captureScreenshot(
           req.correlationId,
@@ -471,6 +485,63 @@ export class MessageHandler {
       console.error("Failed to reorder tabs via Tree Style Tab:", error);
       return false;
     }
+  }
+
+  /**
+   * Move the given tabs to a different window, appending them to the end
+   * of that window. Uses the standard tabs API, which can move tabs
+   * across windows (TST's move commands cannot); index -1 places each tab
+   * at the end of the target window, preserving the given order. The
+   * child tabs of a moved tab stay behind in the source window; move them
+   * separately.
+   */
+  private async moveTabsToWindow(
+    correlationId: string,
+    tabIds: number[],
+    windowId: number
+  ): Promise<void> {
+    for (const tabId of tabIds) {
+      await browser.tabs.move(tabId, { windowId, index: -1 });
+    }
+    await this.client.sendResourceToServer({
+      resource: "tabs-moved-to-window",
+      correlationId,
+      tabIds,
+      windowId,
+    });
+  }
+
+  /**
+   * Attach the given tabs as child tabs of the parent tab in the Tree
+   * Style Tab tree, re-parenting them from their current parent.
+   * Requires Tree Style Tab: the standard WebExtensions API has no
+   * equivalent. The tabs and the parent tab must be in the same window.
+   */
+  private async attachTabsToParent(
+    correlationId: string,
+    tabIds: number[],
+    parentTabId: number
+  ): Promise<void> {
+    const tst = this.tst;
+    if (!tst || !tst.isAvailable()) {
+      throw new Error(
+        "Attaching tabs to a parent tab requires Tree Style Tab, which is not available"
+      );
+    }
+    for (const tabId of tabIds) {
+      if (!(await tst.attachTabToParent(tabId, parentTabId))) {
+        throw new Error(
+          `Failed to attach tab ${tabId} to tab ${parentTabId} via Tree Style Tab ` +
+            "(both tabs must exist and be in the same window)"
+        );
+      }
+    }
+    await this.client.sendResourceToServer({
+      resource: "tabs-attached-to-parent",
+      correlationId,
+      tabIds,
+      parentTabId,
+    });
   }
 
   private async findAndHighlightText(

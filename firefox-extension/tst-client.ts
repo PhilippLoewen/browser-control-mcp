@@ -162,6 +162,23 @@ export class TstClient {
     return result === true;
   }
 
+  /**
+   * Attach the given tab as a child tab of the parent tab, re-parenting
+   * it from its current parent if it has one. Both tabs must be in the
+   * same window.
+   */
+  public async attachTabToParent(
+    tabId: number,
+    parentTabId: number
+  ): Promise<boolean> {
+    const result = await this.command({
+      type: "attach",
+      child: tabId,
+      parent: parentTabId,
+    });
+    return result === true;
+  }
+
   // ------------------------------------------------------------------
   // Internals
   // ------------------------------------------------------------------
