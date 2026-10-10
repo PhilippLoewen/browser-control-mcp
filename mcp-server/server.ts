@@ -280,7 +280,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "create-window",
-  "Create a new browser window, optionally moving the given tabs into it in the given order. If no tabs are given, the window opens with a single new tab. Returns the ID of the new window. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
+  "Create a new browser window, optionally moving the given tabs into it in the given order. If no tabs are given, the window opens with a single new tab. If tabs are given, the window's own default tab is closed so it contains exactly the moved tabs. Returns the ID of the new window. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
   {
     tabIds: z
       .array(z.number())

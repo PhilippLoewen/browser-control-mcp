@@ -553,7 +553,7 @@ describe("MessageHandler", () => {
     });
 
     describe("create-window command", () => {
-      it("should create a new window, move the given tabs into it and send confirmation", async () => {
+      it("should create a new window, move the given tabs into it, close the default tab and send confirmation", async () => {
         // Arrange
         const request: ServerMessageRequest = {
           cmd: "create-window",
@@ -562,13 +562,16 @@ describe("MessageHandler", () => {
         };
 
         (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 900 }]);
         (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+        (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
 
         // Act
         await messageHandler.handleDecodedMessage(request);
 
         // Assert
         expect(browser.windows.create).toHaveBeenCalledWith({});
+        expect(browser.tabs.query).toHaveBeenCalledWith({ windowId: 7 });
         expect(browser.tabs.move).toHaveBeenCalledTimes(2);
         expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
           windowId: 7,
@@ -578,6 +581,7 @@ describe("MessageHandler", () => {
           windowId: 7,
           index: -1,
         });
+        expect(browser.tabs.remove).toHaveBeenCalledWith(900);
         expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
           resource: "window-created",
           correlationId: "test-correlation-id",
@@ -601,7 +605,9 @@ describe("MessageHandler", () => {
 
         // Assert
         expect(browser.windows.create).toHaveBeenCalledWith({});
+        expect(browser.tabs.query).not.toHaveBeenCalled();
         expect(browser.tabs.move).not.toHaveBeenCalled();
+        expect(browser.tabs.remove).not.toHaveBeenCalled();
         expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
           resource: "window-created",
           correlationId: "test-correlation-id",
@@ -637,6 +643,7 @@ describe("MessageHandler", () => {
         };
 
         (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 900 }]);
         (browser.tabs.move as jest.Mock)
           .mockResolvedValueOnce(undefined)
           .mockRejectedValueOnce(new Error("Tab not found"));
@@ -659,6 +666,7 @@ describe("MessageHandler", () => {
         };
 
         (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 900 }]);
         (browser.tabs.move as jest.Mock).mockRejectedValue(
           new Error("Tab not found")
         );
@@ -672,6 +680,34 @@ describe("MessageHandler", () => {
         ).rejects.toThrow("Tab not found");
         expect(browser.windows.remove).toHaveBeenCalledWith(7);
         expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should still succeed if closing the default tab fails", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 900 }]);
+        (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+        (browser.tabs.remove as jest.Mock).mockRejectedValue(
+          new Error("Tab not found")
+        );
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.remove).toHaveBeenCalledWith(900);
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "window-created",
+          correlationId: "test-correlation-id",
+          windowId: 7,
+          tabIds: [123],
+        });
       });
     });
 

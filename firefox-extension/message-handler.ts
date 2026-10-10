@@ -519,9 +519,11 @@ export class MessageHandler {
    * in the given order. A new window is created first and the tabs are
    * moved into it one by one (Firefox's windows.create does not accept
    * multiple existing tabs); without tabs, the window contains only the
-   * new tab that Firefox opens by default. If moving a tab fails, the
-   * new window is removed again so no half-filled window is left
-   * behind.
+   * new tab that Firefox opens by default. Firefox opens every new window
+   * with a single default tab, so when tabs are given that default tab is
+   * closed again after the moves, leaving exactly the given tabs behind.
+   * If moving a tab fails, the new window is removed again so no
+   * half-filled window is left behind.
    */
   private async createWindow(
     correlationId: string,
@@ -532,13 +534,29 @@ export class MessageHandler {
     if (windowId === undefined) {
       throw new Error("Failed to create window: no window ID returned");
     }
+    let defaultTabId: number | undefined;
     try {
+      // Firefox opens every new window with a single default tab. Remember
+      // it now, before any of the given tabs are moved in, so it can be
+      // closed afterwards without touching any other tab.
+      if (tabIds.length > 0) {
+        const initialTabs = await browser.tabs.query({ windowId });
+        if (initialTabs.length === 1) {
+          defaultTabId = initialTabs[0].id;
+        }
+      }
       for (const tabId of tabIds) {
         await browser.tabs.move(tabId, { windowId, index: -1 });
       }
+      if (defaultTabId !== undefined) {
+        await browser.tabs.remove(defaultTabId).catch(() => {
+          // Best effort: the tab may already be gone; the window then
+          // simply contains the given tabs.
+        });
+      }
     } catch (error) {
       console.error(
-        "Failed to move tabs into the new window, removing the window:",
+        "Failed to populate the new window, removing the window:",
         error
       );
       await browser.windows.remove(windowId).catch(() => {
