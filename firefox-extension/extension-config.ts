@@ -51,6 +51,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     description: "Allows the MCP server to move browser tabs to a different window"
   },
   {
+    id: "create-window",
+    name: "Create Browser Window",
+    description: "Allows the MCP server to create new browser windows and move tabs into them"
+  },
+  {
     id: "attach-tabs-to-parent",
     name: "Attach Tabs to Parent Tab",
     description: "Allows the MCP server to attach browser tabs as child tabs of another tab (Tree Style Tab)"
@@ -76,6 +81,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "get-tab-content": "get-tab-web-content",
   "reorder-tabs": "reorder-browser-tabs",
   "move-tabs-to-window": "move-tab-to-window",
+  "create-window": "create-window",
   "attach-tabs-to-parent": "attach-tabs-to-parent",
   "find-highlight": "find-highlight-in-browser-tab",
   "group-tabs": "reorder-browser-tabs",

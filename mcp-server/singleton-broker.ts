@@ -47,6 +47,7 @@ const BROKER_COMMANDS = new Set([
   "find-highlight",
   "group-tabs",
   "move-tabs-to-window",
+  "create-window",
   "attach-tabs-to-parent",
   "capture-screenshot",
 ]);
@@ -305,6 +306,8 @@ function isBrokerMessage(message: unknown): message is ServerMessage {
         typeof value.groupTitle === "string";
     case "move-tabs-to-window":
       return isNumberArray(value.tabIds) && isNumber(value.windowId);
+    case "create-window":
+      return isNumberArray(value.tabIds);
     case "attach-tabs-to-parent":
       return isNumberArray(value.tabIds) && isNumber(value.parentTabId);
     case "capture-screenshot":

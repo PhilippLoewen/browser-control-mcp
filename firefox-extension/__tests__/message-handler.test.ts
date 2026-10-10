@@ -552,6 +552,129 @@ describe("MessageHandler", () => {
       });
     });
 
+    describe("create-window command", () => {
+      it("should create a new window, move the given tabs into it and send confirmation", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123, 456],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.windows.create).toHaveBeenCalledWith({});
+        expect(browser.tabs.move).toHaveBeenCalledTimes(2);
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
+          windowId: 7,
+          index: -1,
+        });
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(2, 456, {
+          windowId: 7,
+          index: -1,
+        });
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "window-created",
+          correlationId: "test-correlation-id",
+          windowId: 7,
+          tabIds: [123, 456],
+        });
+      });
+
+      it("should create a window with only a new tab when no tabs are given", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.windows.create).toHaveBeenCalledWith({});
+        expect(browser.tabs.move).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "window-created",
+          correlationId: "test-correlation-id",
+          windowId: 7,
+          tabIds: [],
+        });
+      });
+
+      it("should throw if the created window has no ID", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({});
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Failed to create window: no window ID returned");
+        expect(browser.tabs.move).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should remove the new window and rethrow if moving a tab fails", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123, 456],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.move as jest.Mock)
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error("Tab not found"));
+        (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Tab not found");
+        expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should still rethrow the original error if removing the new window fails", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.move as jest.Mock).mockRejectedValue(
+          new Error("Tab not found")
+        );
+        (browser.windows.remove as jest.Mock).mockRejectedValue(
+          new Error("Window not found")
+        );
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Tab not found");
+        expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+    });
+
     describe("attach-tabs-to-parent command", () => {
       it("should attach the tabs via Tree Style Tab and send confirmation", async () => {
         // Arrange

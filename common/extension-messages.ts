@@ -76,6 +76,12 @@ export interface TabsMovedToWindowExtensionMessage extends ExtensionMessageBase 
   windowId: number;
 }
 
+export interface WindowCreatedExtensionMessage extends ExtensionMessageBase {
+  resource: "window-created";
+  windowId: number;
+  tabIds: number[];
+}
+
 export interface TabsAttachedToParentExtensionMessage extends ExtensionMessageBase {
   resource: "tabs-attached-to-parent";
   tabIds: number[];
@@ -100,6 +106,7 @@ export type ExtensionMessage =
   | TabsClosedExtensionMessage
   | TabGroupCreatedExtensionMessage
   | TabsMovedToWindowExtensionMessage
+  | WindowCreatedExtensionMessage
   | TabsAttachedToParentExtensionMessage
   | ScreenshotExtensionMessage;
 
