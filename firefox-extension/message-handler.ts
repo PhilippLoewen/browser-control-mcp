@@ -69,6 +69,9 @@ export class MessageHandler {
           req.windowId
         );
         break;
+      case "create-window":
+        await this.createWindow(req.correlationId, req.tabIds);
+        break;
       case "attach-tabs-to-parent":
         await this.attachTabsToParent(
           req.correlationId,
@@ -508,6 +511,47 @@ export class MessageHandler {
       correlationId,
       tabIds,
       windowId,
+    });
+  }
+
+  /**
+   * Create a new browser window and, when given, move the tabs into it
+   * in the given order. A new window is created first and the tabs are
+   * moved into it one by one (Firefox's windows.create does not accept
+   * multiple existing tabs); without tabs, the window contains only the
+   * new tab that Firefox opens by default. If moving a tab fails, the
+   * new window is removed again so no half-filled window is left
+   * behind.
+   */
+  private async createWindow(
+    correlationId: string,
+    tabIds: number[]
+  ): Promise<void> {
+    const newWindow = await browser.windows.create({});
+    const windowId = newWindow.id;
+    if (windowId === undefined) {
+      throw new Error("Failed to create window: no window ID returned");
+    }
+    try {
+      for (const tabId of tabIds) {
+        await browser.tabs.move(tabId, { windowId, index: -1 });
+      }
+    } catch (error) {
+      console.error(
+        "Failed to move tabs into the new window, removing the window:",
+        error
+      );
+      await browser.windows.remove(windowId).catch(() => {
+        // Best effort: the window may already be gone; the original
+        // error takes precedence.
+      });
+      throw error;
+    }
+    await this.client.sendResourceToServer({
+      resource: "window-created",
+      correlationId,
+      windowId,
+      tabIds,
     });
   }
 

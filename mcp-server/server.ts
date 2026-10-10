@@ -279,6 +279,31 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "create-window",
+  "Create a new browser window, optionally moving the given tabs into it in the given order. If no tabs are given, the window opens with a single new tab. Returns the ID of the new window. When Tree Style Tab is installed, the child tabs of a moved tab stay in the source window; move the child tabs separately if needed.",
+  {
+    tabIds: z
+      .array(z.number())
+      .default([])
+      .describe("IDs of the tabs to move into the new window; omit for a window with only a new tab"),
+  },
+  async ({ tabIds }) => {
+    const windowId = await browserApi.createWindow(tabIds);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            tabIds.length > 0
+              ? `Created window ${windowId} with tabs ${tabIds.join(", ")}`
+              : `Created window ${windowId} with a new tab`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
   "attach-tabs-to-parent",
   "Attach one or more tabs as child tabs of a parent tab in the Tree Style Tab tree, re-parenting them from their current parent (e.g. to merge two tab trees into one group). Requires Tree Style Tab to be installed and enabled; the tabs and the parent tab must be in the same window.",
   {

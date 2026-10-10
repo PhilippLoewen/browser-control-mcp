@@ -56,6 +56,11 @@ export interface MoveTabsToWindowServerMessage extends ServerMessageBase {
   windowId: number;
 }
 
+export interface CreateWindowServerMessage extends ServerMessageBase {
+  cmd: "create-window";
+  tabIds: number[];
+}
+
 export interface AttachTabsToParentServerMessage extends ServerMessageBase {
   cmd: "attach-tabs-to-parent";
   tabIds: number[];
@@ -80,6 +85,7 @@ export type ServerMessage =
   | FindHighlightServerMessage
   | GroupTabsServerMessage
   | MoveTabsToWindowServerMessage
+  | CreateWindowServerMessage
   | AttachTabsToParentServerMessage
   | CaptureScreenshotServerMessage;
 

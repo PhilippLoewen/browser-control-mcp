@@ -366,6 +366,15 @@ export class BrowserAPI {
     );
   }
 
+  async createWindow(tabIds: number[]): Promise<number> {
+    const message = await this.requestExtension(
+      { cmd: "create-window", tabIds },
+      "window-created",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+    );
+    return message.windowId;
+  }
+
   async attachTabsToParent(
     tabIds: number[],
     parentTabId: number
@@ -485,6 +494,12 @@ export class BrowserAPI {
         return await this.requestExtension(
           message,
           "tabs-moved-to-window",
+          TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+        );
+      case "create-window":
+        return await this.requestExtension(
+          message,
+          "window-created",
           TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
         );
       case "attach-tabs-to-parent":

@@ -23,6 +23,10 @@ const mockBrowser = {
   tabGroups: {
     update: jest.fn(),
   },
+  windows: {
+    create: jest.fn(),
+    remove: jest.fn(),
+  },
   history: {
     search: jest.fn(),
   },
