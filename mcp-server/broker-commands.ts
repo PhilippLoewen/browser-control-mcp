@@ -7,12 +7,18 @@ import type {
 // time carry an explicit budget in BROKER_COMMANDS.
 export const DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
 // With Tree Style Tab available, fetching the tab list requires one TST
-// round trip per window, so it may take noticeably longer than the other
-// commands.
-export const TAB_LIST_RESPONSE_TIMEOUT_MS = 5000;
-// Moving tabs across windows and attaching tabs in the Tree Style Tab
-// tree involve a round trip per tab, so allow more time than the default.
-export const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 5000;
+// round trip per window, and the extension first waits for pending tab
+// structure writes to finish, so it may take noticeably longer than the
+// other commands.
+export const TAB_LIST_RESPONSE_TIMEOUT_MS = 30000;
+// Commands that change the tab structure run one at a time in the
+// extension and may wait for the previous one. With Tree Style Tab they
+// involve a round trip per tab, or a TST command that moves many tabs
+// followed by reading the tree back until it has settled (grouping alone
+// can take over 15 s in the worst case), so allow much more time than the
+// default: a server-side timeout does not stop the extension from
+// applying the write. Must stay below BROKER_REQUEST_TIMEOUT_MS.
+export const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 30000;
 // Capturing may foreground the tab, wait for it to paint, encode the image
 // and transfer a payload orders of magnitude larger than the other responses.
 export const SCREENSHOT_RESPONSE_TIMEOUT_MS = 10000;
@@ -57,13 +63,17 @@ export const BROKER_COMMANDS: {
 } = {
   "open-tab": {
     resource: "opened-tab-id",
-    timeoutMs: DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
+    timeoutMs: TAB_STRUCTURE_RESPONSE_TIMEOUT_MS,
     validate: (message) => typeof message.url === "string",
   },
   "close-tabs": {
     resource: "tabs-closed",
-    timeoutMs: DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
-    validate: (message) => isNumberArray(message.tabIds),
+    timeoutMs: TAB_STRUCTURE_RESPONSE_TIMEOUT_MS,
+    validate: (message) =>
+      isNumberArray(message.tabIds) &&
+      (message.childPlacement === undefined ||
+        message.childPlacement === "promote" ||
+        message.childPlacement === "top-level"),
   },
   "get-tab-list": {
     resource: "tabs",
@@ -88,7 +98,7 @@ export const BROKER_COMMANDS: {
   },
   "reorder-tabs": {
     resource: "tabs-reordered",
-    timeoutMs: DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
+    timeoutMs: TAB_STRUCTURE_RESPONSE_TIMEOUT_MS,
     validate: (message) => isNumberArray(message.tabOrder),
   },
   "find-highlight": {
@@ -99,7 +109,7 @@ export const BROKER_COMMANDS: {
   },
   "group-tabs": {
     resource: "new-tab-group",
-    timeoutMs: DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
+    timeoutMs: TAB_STRUCTURE_RESPONSE_TIMEOUT_MS,
     validate: (message) =>
       isNumberArray(message.tabIds) &&
       typeof message.isCollapsed === "boolean" &&

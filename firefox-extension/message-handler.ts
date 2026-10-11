@@ -1,9 +1,10 @@
-import type { ServerMessageRequest } from "@browser-control-mcp/common";
+import type { ChildPlacement, ServerMessageRequest } from "@browser-control-mcp/common";
 import type { BrowserTab } from "@browser-control-mcp/common/extension-messages";
 import { WebsocketClient } from "./client";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry } from "./extension-config";
 import { hasCaptureConsent, markTabAsAwaitingConsent } from "./capture-consent";
-import type { TstClient, TstTreeItem } from "./tst-client";
+import type { TstClient, TstInsertPosition, TstTreeItem } from "./tst-client";
+import { WriteLock } from "./write-lock";
 
 // Time to let a newly foregrounded tab paint before capturing it
 const TAB_PAINT_DELAY_MS = 250;
@@ -30,6 +31,80 @@ const TAB_SCRIPT_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000];
 const HOST_PERMISSION_ERROR_PATTERN =
   /Missing host permission for the tab( or frames)?/;
 
+// How long to keep re-reading the Tree Style Tab tree after a write until
+// it shows the write's effect, and how often. TST acknowledges commands
+// before it has finished re-arranging the tree.
+const TREE_SETTLE_TIMEOUT_MS = 2_000;
+const TREE_SETTLE_POLL_MS = 100;
+
+// How often, and after how long, to retry building the tree-ordered tab
+// list when the tab list and Tree Style Tab's tree disagree.
+const TAB_LIST_TREE_RETRIES = 2;
+const TAB_LIST_TREE_RETRY_DELAY_MS = 150;
+
+/** A tab's place in the Tree Style Tab tree. */
+interface TreeNode {
+  windowId: number;
+  /** Undefined for a tab at the top level. */
+  parentTabId?: number;
+  childIds: number[];
+}
+
+/**
+ * The last tab in the subtree of the given tab (the tab itself without
+ * children), ignoring the given closed tabs.
+ */
+function lastDescendant(
+  tree: Map<number, TreeNode>,
+  tabId: number,
+  closed: Set<number>
+): number {
+  const openChildIds = (id: number) =>
+    (tree.get(id)?.childIds ?? []).filter((childId) => !closed.has(childId));
+  let last = tabId;
+  let childIds = openChildIds(last);
+  while (childIds.length > 0) {
+    last = childIds[childIds.length - 1];
+    childIds = openChildIds(last);
+  }
+  return last;
+}
+
+/**
+ * Where to attach the kept children of a closed tab to the closed tab's
+ * parent so they take its place: before the closed tab's next sibling
+ * that stays open, or else each after the subtree in front of it.
+ */
+function positionsInPlaceOf(
+  before: Map<number, TreeNode>,
+  closedTabId: number,
+  keptChildren: number[],
+  closed: Set<number>
+): TstInsertPosition[] {
+  const parentId = before.get(closedTabId)!.parentTabId!;
+  const siblings = before.get(parentId)?.childIds ?? [];
+  const index = siblings.indexOf(closedTabId);
+  const nextSibling = siblings
+    .slice(index + 1)
+    .find((siblingId) => !closed.has(siblingId));
+  if (nextSibling !== undefined) {
+    return keptChildren.map(() => ({ insertBefore: nextSibling }));
+  }
+  const previousSibling = siblings
+    .slice(0, Math.max(index, 0))
+    .reverse()
+    .find((siblingId) => !closed.has(siblingId));
+  let anchor =
+    previousSibling !== undefined
+      ? lastDescendant(before, previousSibling, closed)
+      : parentId;
+  return keptChildren.map((childId) => {
+    const position = { insertAfter: anchor };
+    anchor = lastDescendant(before, childId, closed);
+    return position;
+  });
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -42,13 +117,27 @@ function isHostPermissionError(error: unknown): boolean {
   return HOST_PERMISSION_ERROR_PATTERN.test(message);
 }
 
+// Commands that change the tab structure. They run one at a time (see
+// WriteLock), and the tab list waits for them to finish.
+const WRITE_COMMANDS: ReadonlySet<ServerMessageRequest["cmd"]> = new Set([
+  "open-tab",
+  "close-tabs",
+  "reorder-tabs",
+  "group-tabs",
+  "move-tabs-to-window",
+  "create-window",
+  "attach-tabs-to-parent",
+]);
+
 export class MessageHandler {
   private client: WebsocketClient;
   private tst?: TstClient;
+  private writeLock: WriteLock;
 
-  constructor(client: WebsocketClient, tst?: TstClient) {
+  constructor(client: WebsocketClient, tst?: TstClient, writeLock = new WriteLock()) {
     this.client = client;
     this.tst = tst;
+    this.writeLock = writeLock;
   }
 
   public async handleDecodedMessage(req: ServerMessageRequest): Promise<void> {
@@ -61,12 +150,29 @@ export class MessageHandler {
       console.error("Failed to add audit log entry:", error);
     });
 
+    if (WRITE_COMMANDS.has(req.cmd)) {
+      await this.writeLock.run(() => this.dispatch(req));
+      return;
+    }
+    if (req.cmd === "get-tab-list") {
+      // Do not list a tree that a pending write is still changing.
+      await this.writeLock.idle();
+    }
+    await this.dispatch(req);
+  }
+
+  private async dispatch(req: ServerMessageRequest): Promise<void> {
     switch (req.cmd) {
       case "open-tab":
         await this.openUrl(req.correlationId, req.url, req.parentTabId);
         break;
       case "close-tabs":
-        await this.closeTabs(req.correlationId, req.tabIds, req.keepChildren);
+        await this.closeTabs(
+          req.correlationId,
+          req.tabIds,
+          req.keepChildren,
+          req.childPlacement
+        );
         break;
       case "get-tab-list":
         await this.sendTabs(req.correlationId);
@@ -171,24 +277,62 @@ export class MessageHandler {
       throw new Error("Domain in user defined deny list");
     }
 
-    let options: { url: string; openerTabId?: number } = { url };
+    let options: { url: string; openerTabId?: number; windowId?: number } = {
+      url,
+    };
 
     // When Tree Style Tab is available, new tabs become children of the
     // opener tab. Use the explicitly requested parent, or the currently
     // active tab so the tab joins the tree the user is looking at.
     if (this.tst?.isAvailable()) {
-      try {
-        const openerTabId =
-          parentTabId ?? (await this.getActiveTabId());
-        if (openerTabId !== undefined) {
-          options = { url, openerTabId };
+      let opener: browser.tabs.Tab | undefined;
+      if (parentTabId !== undefined) {
+        try {
+          opener = await browser.tabs.get(parentTabId);
+        } catch {
+          throw new Error(`Parent tab ${parentTabId} does not exist`);
         }
-      } catch (error) {
-        console.error("Failed to determine the opener tab for the new tab:", error);
+      } else {
+        try {
+          opener = await this.getActiveTab();
+        } catch (error) {
+          console.error("Failed to determine the opener tab for the new tab:", error);
+        }
+      }
+      if (opener?.id !== undefined) {
+        // Firefox rejects an opener tab from another window, and would
+        // otherwise create the tab in the last focused window.
+        options = {
+          url,
+          openerTabId: opener.id,
+          ...(opener.windowId !== undefined ? { windowId: opener.windowId } : {}),
+        };
       }
     }
 
     const tab = await browser.tabs.create(options);
+
+    // TST attaches the new tab to its opener only after the tab has been
+    // created, so read the tree back until it shows the tab under its
+    // parent; a list read right after the reply then sees the tab in place.
+    const windowId = tab.windowId ?? options.windowId;
+    const openerTabId = options.openerTabId;
+    if (tab.id !== undefined && openerTabId !== undefined && windowId !== undefined) {
+      const { tree, settled } = await this.waitForTree(
+        [windowId],
+        (tree) => tree.get(tab.id!)?.parentTabId === openerTabId
+      );
+      await this.client.sendResourceToServer({
+        resource: "opened-tab-id",
+        correlationId,
+        tabId: tab.id,
+        ...(tree?.has(tab.id)
+          ? { parentTabId: tree.get(tab.id)!.parentTabId ?? null }
+          : {}),
+        verified: settled,
+      });
+      return;
+    }
 
     await this.client.sendResourceToServer({
       resource: "opened-tab-id",
@@ -197,35 +341,26 @@ export class MessageHandler {
     });
   }
 
-  private async getActiveTabId(): Promise<number | undefined> {
+  private async getActiveTab(): Promise<browser.tabs.Tab | undefined> {
     const [activeTab] = await browser.tabs.query({
       active: true,
       lastFocusedWindow: true,
     });
-    return activeTab?.id;
+    return activeTab;
   }
 
   private async closeTabs(
     correlationId: string,
     tabIds: number[],
-    keepChildren?: boolean
+    keepChildren?: boolean,
+    childPlacement: ChildPlacement = "promote"
   ): Promise<void> {
     // With Tree Style Tab, closing a tab whose tree is collapsed would also
     // close its hidden child tabs. Use TST's command to close only the
     // specified tabs, keeping their children.
     if (keepChildren && this.tst?.isAvailable()) {
-      const kept = await this.tst.removeTabsKeepingChildren(tabIds);
-      if (!kept) {
-        console.error(
-          "Failed to close tabs keeping their children via Tree Style Tab, falling back to tabs.remove"
-        );
-      } else {
-        await this.client.sendResourceToServer({
-          resource: "tabs-closed",
-          correlationId,
-        });
-        return;
-      }
+      await this.closeTabsKeepingChildren(correlationId, tabIds, childPlacement);
+      return;
     }
 
     await browser.tabs.remove(tabIds);
@@ -235,19 +370,258 @@ export class MessageHandler {
     });
   }
 
+  /**
+   * Close the given tabs via Tree Style Tab, keeping their child tabs, and
+   * report where the children actually ended up.
+   *
+   * TST's default ("promote-intelligently") makes the first child of a
+   * closed root tab the new parent of its siblings, so closing a group tab
+   * would build a deep subtree under one of its former members. TST's
+   * "promote-all" would avoid that, but TST drops it when it comes through
+   * the API (its internal value is 0, which TST treats as "no method
+   * given") and falls back to the user's close-parent setting. So the tabs
+   * are always closed with "detach-all", which moves the children to the
+   * top level, and children that belong under the closed tab's parent are
+   * then attached to it again, in the closed tab's place.
+   *
+   * TST acknowledges the command before it has re-parented the children,
+   * so the tree is read back until it shows the expected placement. If it
+   * does not settle in time, the response still reports the actual
+   * placement, marked as unverified.
+   */
+  private async closeTabsKeepingChildren(
+    correlationId: string,
+    tabIds: number[],
+    childPlacement: ChildPlacement
+  ): Promise<void> {
+    const tst = this.tst!;
+    const before = await this.readTree(await this.windowIdsOf(tabIds));
+
+    const kept = await tst.removeTabsKeepingChildren(tabIds, "detach-all");
+    if (!kept) {
+      // Do not fall back to tabs.remove: it would close the hidden children
+      // of collapsed trees, the opposite of what was asked.
+      throw new Error(
+        `Tree Style Tab failed to close tabs ${tabIds.join(", ")} keeping ` +
+          "their children; some of them may still have been closed, check " +
+          "the tab list before retrying"
+      );
+    }
+
+    if (!before) {
+      await this.client.sendResourceToServer({
+        resource: "tabs-closed",
+        correlationId,
+        verified: false,
+      });
+      return;
+    }
+
+    // The parent each kept child is expected to end up under (undefined:
+    // top level), and where to attach it to that parent. A closed tab
+    // inside another closed tab passes its children on to the nearest
+    // ancestor that stays open.
+    const closed = new Set(tabIds);
+    const expectedParents = new Map<number, number | undefined>();
+    const reattachments: {
+      childId: number;
+      parentId: number;
+      position: TstInsertPosition;
+    }[] = [];
+    const windowIds = new Set<number>();
+    for (const tabId of tabIds) {
+      const directParent = before.get(tabId)?.parentTabId;
+      let newParent = directParent;
+      while (newParent !== undefined && closed.has(newParent)) {
+        newParent = before.get(newParent)?.parentTabId;
+      }
+      if (childPlacement === "top-level") {
+        newParent = undefined;
+      }
+      const keptChildren = (before.get(tabId)?.childIds ?? []).filter(
+        (childId) => !closed.has(childId)
+      );
+      const positions =
+        newParent !== undefined && newParent === directParent
+          ? positionsInPlaceOf(before, tabId, keptChildren, closed)
+          : keptChildren.map(() => ({}));
+      keptChildren.forEach((childId, index) => {
+        expectedParents.set(childId, newParent);
+        windowIds.add(before.get(childId)!.windowId);
+        if (newParent !== undefined) {
+          reattachments.push({
+            childId,
+            parentId: newParent,
+            position: positions[index],
+          });
+        }
+      });
+    }
+
+    if (expectedParents.size === 0) {
+      await this.client.sendResourceToServer({
+        resource: "tabs-closed",
+        correlationId,
+        reparented: [],
+        verified: true,
+      });
+      return;
+    }
+
+    if (reattachments.length > 0) {
+      // Let TST finish detaching the children first; attaching them before
+      // it processes the close would be undone by the detach.
+      await this.waitForTree(
+        windowIds,
+        (tree) =>
+          tabIds.every((tabId) => !tree.has(tabId)) &&
+          reattachments.every(
+            ({ childId }) => tree.get(childId)?.parentTabId === undefined
+          )
+      );
+      for (const { childId, parentId, position } of reattachments) {
+        if (!(await tst.attachTabToParent(childId, parentId, position))) {
+          console.error(
+            `Failed to attach kept child tab ${childId} to tab ${parentId}`
+          );
+        }
+      }
+    }
+
+    // Only the windows holding kept children are read, so the closed tabs'
+    // absence is checked for the closed tabs in those windows (the ones
+    // whose children are being placed).
+    const { tree, settled } = await this.waitForTree(
+      windowIds,
+      (tree) =>
+        tabIds.every((tabId) => !tree.has(tabId)) &&
+        [...expectedParents].every(
+          ([childId, parentId]) =>
+            tree.has(childId) && tree.get(childId)!.parentTabId === parentId
+        )
+    );
+    await this.client.sendResourceToServer({
+      resource: "tabs-closed",
+      correlationId,
+      ...(tree
+        ? {
+            reparented: [...expectedParents.keys()]
+              .filter((childId) => tree.has(childId))
+              .map((childId) => ({
+                tabId: childId,
+                parentTabId: tree.get(childId)!.parentTabId ?? null,
+              })),
+          }
+        : {}),
+      verified: settled,
+    });
+  }
+
+  /** The IDs of the windows the given tabs are in. */
+  private async windowIdsOf(tabIds: number[]): Promise<Set<number>> {
+    const wanted = new Set(tabIds);
+    const windowIds = new Set<number>();
+    for (const tab of await browser.tabs.query({})) {
+      if (
+        tab.id !== undefined &&
+        tab.windowId !== undefined &&
+        wanted.has(tab.id)
+      ) {
+        windowIds.add(tab.windowId);
+      }
+    }
+    return windowIds;
+  }
+
+  /**
+   * Read the Tree Style Tab tree of the given windows into a map from tab
+   * ID to its place in the tree, in tree order. Returns null when the tree
+   * of one of the windows cannot be read.
+   */
+  private async readTree(
+    windowIds: Iterable<number>
+  ): Promise<Map<number, TreeNode> | null> {
+    const tst = this.tst;
+    if (!tst) return null;
+    const nodes = new Map<number, TreeNode>();
+    for (const windowId of windowIds) {
+      const roots = await tst.getLightTree(windowId);
+      if (!roots) return null;
+      const visit = (item: TstTreeItem, parentTabId: number | undefined): void => {
+        const children = item.children ?? [];
+        nodes.set(item.id, {
+          windowId,
+          parentTabId,
+          childIds: children.map((child) => child.id),
+        });
+        for (const child of children) {
+          visit(child, item.id);
+        }
+      };
+      for (const root of roots) {
+        visit(root, undefined);
+      }
+    }
+    return nodes;
+  }
+
+  /**
+   * Re-read the tree of the given windows until it satisfies the
+   * predicate or the settle timeout passes. Tree Style Tab acknowledges
+   * commands before it has finished re-arranging the tree, so a write's
+   * effect is only visible after a moment. Returns the last tree read
+   * (null if it could not be read) and whether it satisfied the predicate.
+   */
+  private async waitForTree(
+    windowIds: Iterable<number>,
+    predicate: (tree: Map<number, TreeNode>) => boolean
+  ): Promise<{ tree: Map<number, TreeNode> | null; settled: boolean }> {
+    const windows = [...windowIds];
+    const deadline = Date.now() + TREE_SETTLE_TIMEOUT_MS;
+    while (true) {
+      const tree = await this.readTree(windows);
+      if (tree && predicate(tree)) {
+        return { tree, settled: true };
+      }
+      if (Date.now() >= deadline) {
+        return { tree, settled: false };
+      }
+      await sleep(TREE_SETTLE_POLL_MS);
+    }
+  }
+
   private async sendTabs(correlationId: string): Promise<void> {
-    const tabs = await browser.tabs.query({});
+    let tabs = await browser.tabs.query({});
+
+    if (!this.tst?.isAvailable()) {
+      await this.client.sendResourceToServer({
+        resource: "tabs",
+        correlationId,
+        tabs,
+      });
+      return;
+    }
 
     // With Tree Style Tab available, the tabs are sent in tree order with
-    // their tree structure, instead of a flat list.
-    const treeTabs = this.tst?.isAvailable()
-      ? await this.buildTreeTabList(tabs)
-      : null;
+    // their tree structure, instead of a flat list. The tab list and TST's
+    // tree briefly disagree while TST is still processing a change, so a
+    // mismatch is retried before falling back to the flat list.
+    let treeTabs = await this.buildTreeTabList(tabs);
+    for (
+      let attempt = 0;
+      treeTabs === null && attempt < TAB_LIST_TREE_RETRIES;
+      attempt++
+    ) {
+      await sleep(TAB_LIST_TREE_RETRY_DELAY_MS);
+      tabs = await browser.tabs.query({});
+      treeTabs = await this.buildTreeTabList(tabs);
+    }
 
     await this.client.sendResourceToServer({
       resource: "tabs",
       correlationId,
       tabs: treeTabs ?? tabs,
+      treeAvailable: treeTabs !== null,
     });
   }
 
@@ -1201,23 +1575,8 @@ export class MessageHandler {
     // native tab group. The TST API has no color parameter, so the color is
     // ignored on this path.
     if (this.tst?.isAvailable()) {
-      const groupId = await this.tst.createGroup(tabIds, groupTitle);
-      if (groupId !== null) {
-        // Collapse the group's tree if requested. TST reports success even
-        // when the group has no (or not enough) child tabs to collapse.
-        if (isCollapsed) {
-          await this.tst.collapseTree(groupId);
-        }
-        await this.client.sendResourceToServer({
-          resource: "new-tab-group",
-          correlationId,
-          groupId,
-        });
-        return;
-      }
-      console.error(
-        "Failed to create a Tree Style Tab group, falling back to native tab groups"
-      );
+      await this.groupTabsViaTst(correlationId, tabIds, isCollapsed, groupTitle);
+      return;
     }
 
     const nativeGroupId = await browser.tabs.group({
@@ -1234,6 +1593,125 @@ export class MessageHandler {
       resource: "new-tab-group",
       correlationId,
       groupId: tabGroup.id,
+    });
+  }
+
+  /**
+   * Group the tabs under a new Tree Style Tab group tab and report the
+   * group's actual membership and position, read back from the tree.
+   *
+   * TST acknowledges the command before it has finished moving the tabs,
+   * and can leave some of them out, so the tree is read back until every
+   * requested tab is in the group (directly or below another grouped tab).
+   *
+   * TST creates the group tab under the parent of the first grouped tab.
+   * When the grouped tabs did not all share that parent, this nests the
+   * group inside an unrelated tree, so the group tab is moved under the
+   * parent the tabs shared, or to the top level when they shared none.
+   */
+  private async groupTabsViaTst(
+    correlationId: string,
+    tabIds: number[],
+    isCollapsed: boolean,
+    groupTitle: string
+  ): Promise<void> {
+    const tst = this.tst!;
+    const windowIds = await this.windowIdsOf(tabIds);
+    const before = await this.readTree(windowIds);
+
+    const groupId = await tst.createGroup(tabIds, groupTitle);
+    if (groupId === null) {
+      // Do not fall back to native tab groups: after a timeout TST may
+      // still apply the grouping, and the two would fight over the tabs.
+      throw new Error(
+        `Tree Style Tab failed to create the group "${groupTitle}"; it may ` +
+          "still have been created, check the tab list before retrying"
+      );
+    }
+
+    const isMember = (tree: Map<number, TreeNode>, tabId: number): boolean => {
+      let parentId = tree.get(tabId)?.parentTabId;
+      while (parentId !== undefined) {
+        if (parentId === groupId) return true;
+        parentId = tree.get(parentId)?.parentTabId;
+      }
+      return false;
+    };
+    const allGrouped = (tree: Map<number, TreeNode>): boolean =>
+      tabIds.every((tabId) => isMember(tree, tabId));
+    const grouping = await this.waitForTree(windowIds, allGrouped);
+    let tree = grouping.tree;
+    let verified = grouping.settled;
+    // Set when the group tab could not be moved to where it belongs.
+    let intendedParentTabId: number | null | undefined;
+
+    if (before && tree?.has(groupId)) {
+      // Only the top tabs of the selection (whose parent is not grouped
+      // too) are attached to the group tab, so only their parents count.
+      // Tabs that did not exist cannot be grouped and do not count either.
+      const selected = new Set(tabIds);
+      const originalParents = new Set(
+        tabIds
+          .filter((tabId) => before.has(tabId))
+          .map((tabId) => before.get(tabId)!.parentTabId)
+          .filter((parentId) => parentId === undefined || !selected.has(parentId))
+      );
+      const expectedParent =
+        originalParents.size === 1 ? [...originalParents][0] : undefined;
+      if (tree.get(groupId)!.parentTabId !== expectedParent) {
+        // Attach in place (after the tab in front of the group tab): moving
+        // the tab would let TST re-derive its parent from the new position.
+        const groupWindow = tree.get(groupId)!.windowId;
+        const windowOrder = [...tree]
+          .filter(([, node]) => node.windowId === groupWindow)
+          .map(([tabId]) => tabId);
+        const previousTab = windowOrder[windowOrder.indexOf(groupId) - 1];
+        const moved =
+          expectedParent === undefined
+            ? await tst.detachTab(groupId)
+            : await tst.attachTabToParent(
+                groupId,
+                expectedParent,
+                previousTab !== undefined ? { insertAfter: previousTab } : {}
+              );
+        if (!moved) {
+          console.error(
+            `Failed to move group tab ${groupId} out of the tree TST created it in`
+          );
+        }
+        const placing = await this.waitForTree(
+          windowIds,
+          (tree) =>
+            tree.get(groupId)?.parentTabId === expectedParent &&
+            (!verified || allGrouped(tree))
+        );
+        tree = placing.tree;
+        verified = verified && placing.settled;
+        if (tree?.get(groupId)?.parentTabId !== expectedParent) {
+          intendedParentTabId = expectedParent ?? null;
+        }
+      }
+    }
+
+    // Collapse the group's tree if requested. TST reports success even
+    // when the group has no (or not enough) child tabs to collapse.
+    if (isCollapsed) {
+      await tst.collapseTree(groupId);
+    }
+
+    await this.client.sendResourceToServer({
+      resource: "new-tab-group",
+      correlationId,
+      groupId,
+      ...(tree
+        ? {
+            memberTabIds: tabIds.filter((tabId) => isMember(tree, tabId)),
+            missingTabIds: tabIds.filter((tabId) => !isMember(tree, tabId)),
+            parentTabId: tree.get(groupId)?.parentTabId ?? null,
+          }
+        : {}),
+      ...(intendedParentTabId !== undefined ? { intendedParentTabId } : {}),
+      verified,
     });
   }
 }

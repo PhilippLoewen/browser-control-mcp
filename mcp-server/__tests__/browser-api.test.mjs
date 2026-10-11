@@ -122,6 +122,59 @@ test("a brokered get-tab-list waits for the extended tab list budget", async () 
   }
 });
 
+test("a response arriving after its request timed out is dropped", async () => {
+  const port = await getFreePort();
+  const secret = `secret-${port}`;
+  const cacheDirectory = createCacheDirectory();
+  const previousEnvironment = setEnvironment({
+    EXTENSION_PORT: String(port),
+    EXTENSION_SECRET: secret,
+    XDG_CACHE_HOME: cacheDirectory,
+  });
+  const api = new BrowserAPI();
+  let extension;
+
+  try {
+    await api.init();
+    extension = new WebSocket(`ws://127.0.0.1:${port}`);
+    const lateReplySent = new Promise((resolve) => {
+      extension.on("message", (rawMessage) => {
+        const request = JSON.parse(rawMessage.toString());
+        const payload = responseFor(request.payload);
+        const send = (message) =>
+          extension.send(JSON.stringify(message), () => resolve());
+        if (request.payload.cmd === "find-highlight") {
+          // Answer (and fail) only after the 1000 ms budget has passed.
+          setTimeout(() => {
+            send({ payload, signature: sign(payload, secret) });
+            send({ correlationId: payload.correlationId, errorMessage: "late" });
+          }, 1200);
+        } else {
+          send({ payload, signature: sign(payload, secret) });
+        }
+      });
+    });
+    await new Promise((resolve, reject) => {
+      extension.once("open", resolve);
+      extension.once("error", reject);
+    });
+
+    await assert.rejects(api.findHighlight(42, "needle"));
+    await lateReplySent;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The late replies did not take the server down.
+    assert.deepEqual(await api.getTabList(), [
+      { id: 42, url: "https://example.com", title: "Example" },
+    ]);
+  } finally {
+    await closeWebSocket(extension);
+    await api.close();
+    restoreEnvironment(previousEnvironment);
+    fs.rmSync(cacheDirectory, { recursive: true, force: true });
+  }
+});
+
 test("BrowserAPI waits for a broker that is still starting", async () => {
   const port = await getFreePort();
   const secret = `secret-${port}`;

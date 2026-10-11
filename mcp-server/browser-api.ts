@@ -3,14 +3,18 @@ import * as crypto from "node:crypto";
 import WebSocket from "ws";
 
 import type {
+  ChildPlacement,
   ExtensionMessage,
   BrowserTab,
+  OpenedTabIdExtensionMessage,
   BrowserHistoryItem,
   ServerMessage,
   TabContentExtensionMessage,
   ServerMessageRequest,
   ExtensionError,
   ScreenshotExtensionMessage,
+  TabGroupCreatedExtensionMessage,
+  TabsClosedExtensionMessage,
 } from "@browser-control-mcp/common";
 
 import {
@@ -40,7 +44,8 @@ import {
 } from "./broker-commands";
 
 const WS_DEFAULT_PORT = 8089;
-const BROKER_REQUEST_TIMEOUT_MS = 15000;
+// Covers the leader's longest extension budget (TAB_STRUCTURE_RESPONSE_TIMEOUT_MS).
+const BROKER_REQUEST_TIMEOUT_MS = 35000;
 // How long to wait at startup for an existing broker socket to appear.
 const BROKER_STARTUP_WAIT_MS = 1000;
 // How long to wait for the extension to reconnect after the broker was
@@ -307,27 +312,54 @@ export class BrowserAPI {
   }
 
   async openTab(url: string, parentTabId?: number): Promise<number | undefined> {
-    const message = await this.requestExtension(
-      { cmd: "open-tab", url, parentTabId },
-      "opened-tab-id"
-    );
-    return message.tabId;
+    return (await this.openTabWithPlacement(url, parentTabId)).tabId;
   }
 
-  async closeTabs(tabIds: number[], keepChildren?: boolean) {
-    await this.requestExtension(
-      { cmd: "close-tabs", tabIds, keepChildren },
-      "tabs-closed"
+  /**
+   * Open a tab, returning its ID together with its parent read back from
+   * the Tree Style Tab tree when it was opened as a child tab.
+   */
+  async openTabWithPlacement(
+    url: string,
+    parentTabId?: number
+  ): Promise<OpenedTabIdExtensionMessage> {
+    return await this.requestExtension(
+      { cmd: "open-tab", url, parentTabId },
+      "opened-tab-id",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+    );
+  }
+
+  async closeTabs(
+    tabIds: number[],
+    keepChildren?: boolean,
+    childPlacement?: ChildPlacement
+  ): Promise<TabsClosedExtensionMessage> {
+    return await this.requestExtension(
+      { cmd: "close-tabs", tabIds, keepChildren, childPlacement },
+      "tabs-closed",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
     );
   }
 
   async getTabList(): Promise<BrowserTab[]> {
+    return (await this.getTabListWithTreeState()).tabs;
+  }
+
+  /**
+   * The tab list, and whether it carries the Tree Style Tab tree structure
+   * (undefined without Tree Style Tab).
+   */
+  async getTabListWithTreeState(): Promise<{
+    tabs: BrowserTab[];
+    treeAvailable?: boolean;
+  }> {
     const message = await this.requestExtension(
       { cmd: "get-tab-list" },
       "tabs",
       TAB_LIST_RESPONSE_TIMEOUT_MS
     );
-    return message.tabs;
+    return { tabs: message.tabs, treeAvailable: message.treeAvailable };
   }
 
   async getBrowserRecentHistory(
@@ -353,7 +385,8 @@ export class BrowserAPI {
   async reorderTabs(tabOrder: number[]): Promise<number[]> {
     const message = await this.requestExtension(
       { cmd: "reorder-tabs", tabOrder },
-      "tabs-reordered"
+      "tabs-reordered",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
     );
     return message.tabOrder;
   }
@@ -372,11 +405,30 @@ export class BrowserAPI {
     groupColor: string,
     groupTitle: string
   ): Promise<number> {
-    const message = await this.requestExtension(
-      { cmd: "group-tabs", tabIds, isCollapsed, groupColor, groupTitle },
-      "new-tab-group"
+    const message = await this.groupTabsWithMembership(
+      tabIds,
+      isCollapsed,
+      groupColor,
+      groupTitle
     );
     return message.groupId;
+  }
+
+  /**
+   * Group the tabs, returning the group ID together with the membership
+   * the extension read back from the Tree Style Tab tree.
+   */
+  async groupTabsWithMembership(
+    tabIds: number[],
+    isCollapsed: boolean,
+    groupColor: string,
+    groupTitle: string
+  ): Promise<TabGroupCreatedExtensionMessage> {
+    return await this.requestExtension(
+      { cmd: "group-tabs", tabIds, isCollapsed, groupColor, groupTitle },
+      "new-tab-group",
+      TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
+    );
   }
 
   async moveTabsToWindow(tabIds: number[], windowId: number): Promise<void> {
@@ -515,20 +567,29 @@ export class BrowserAPI {
 
   private handleDecodedExtensionMessage(decoded: ExtensionMessage) {
     const { correlationId } = decoded;
-    const { resolve, resource } = this.extensionRequestMap.get(correlationId)!;
-    if (resource !== decoded.resource) {
-      console.error("Resource mismatch:", resource, decoded.resource);
+    const request = this.extensionRequestMap.get(correlationId);
+    if (!request) {
+      // The request already timed out; the extension kept working on it.
+      console.error(`Dropping late ${decoded.resource} response for a timed-out request`);
+      return;
+    }
+    if (request.resource !== decoded.resource) {
+      console.error("Resource mismatch:", request.resource, decoded.resource);
       return;
     }
     this.extensionRequestMap.delete(correlationId);
-    resolve(decoded);
+    request.resolve(decoded);
   }
 
   private handleExtensionError(decoded: ExtensionError) {
     const { correlationId, errorMessage } = decoded;
-    const { reject } = this.extensionRequestMap.get(correlationId)!;
+    const request = this.extensionRequestMap.get(correlationId);
+    if (!request) {
+      console.error(`Dropping late error for a timed-out request: ${errorMessage}`);
+      return;
+    }
     this.extensionRequestMap.delete(correlationId);
-    reject(errorMessage);
+    request.reject(errorMessage);
   }
 
   private async waitForResponse<T extends ExtensionMessage["resource"]>(
