@@ -9,7 +9,7 @@ dayjs.extend(relativeTime);
 
 const mcpServer = new McpServer({
   name: "BrowserControl",
-  version: "1.6.0",
+  version: "1.7.0",
 });
 
 mcpServer.tool(
