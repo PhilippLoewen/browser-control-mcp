@@ -11,6 +11,37 @@ const TAB_PAINT_DELAY_MS = 250;
 // Max time to wait for a reloaded (previously discarded) tab to finish loading
 const TAB_LOAD_TIMEOUT_MS = 10_000;
 
+// Max time to wait, after the load-complete event, for the tab to report a
+// settled http(s) URL; a freshly reloaded tab can briefly keep reporting a
+// transitional URL (e.g. about:blank) during document swap-in.
+const TAB_URL_SETTLE_TIMEOUT_MS = 5_000;
+const TAB_URL_SETTLE_POLL_MS = 100;
+
+// Delays between retries of a script injection rejected with Firefox's
+// generic "Missing host permission for the tab" error. Firefox also reports
+// that error when the tab's document navigates between the lookup of the
+// target window and the actual execution (Firefox bug 2047009), which can
+// happen right after a discarded tab has reloaded.
+const TAB_SCRIPT_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000];
+
+// Firefox's generic rejection when no window accepts a script-injection
+// query, also produced (misleadingly) when the document navigates during
+// the call.
+const HOST_PERMISSION_ERROR_PATTERN =
+  /Missing host permission for the tab( or frames)?/;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// True for the (deliberately generic) host-permission rejection that
+// Firefox's tabs.executeScript produces when no window accepts the
+// injection query.
+function isHostPermissionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return HOST_PERMISSION_ERROR_PATTERN.test(message);
+}
+
 export class MessageHandler {
   private client: WebsocketClient;
   private tst?: TstClient;
@@ -425,10 +456,80 @@ export class MessageHandler {
     });
   }
 
+  // Wait until a reloaded tab reports a settled state: status "complete"
+  // and a real http(s) URL. The onUpdated "complete" event can fire while
+  // the tab still reports a transitional URL (e.g. about:blank) during
+  // document swap-in, and injecting a script into such a document fails;
+  // poll briefly until the tab settles on its final URL.
+  private async waitForTabUrlSettled(
+    tabId: number,
+    timeoutMs: number
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let tab: browser.tabs.Tab;
+      try {
+        tab = await browser.tabs.get(tabId);
+      } catch (error) {
+        // The tab was closed in the meantime; no point waiting.
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+      const url = tab.url;
+      if (
+        tab.status === "complete" &&
+        typeof url === "string" &&
+        (url.startsWith("http://") || url.startsWith("https://"))
+      ) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for tab ${tabId} to settle on a final URL after reload`
+        );
+      }
+      await sleep(TAB_URL_SETTLE_POLL_MS);
+    }
+  }
+
+  // Run the extraction script, retrying briefly on Firefox's generic
+  // "Missing host permission for the tab" rejection: after reloading a
+  // discarded tab the document may still be settling, in which case the
+  // error is a navigation race (Firefox bug 2047009), not a permission
+  // problem. If the error persists, re-run the permission check against
+  // the settled URL so a redirect to an ungranted origin produces the
+  // usual options-dialog flow instead of Firefox's raw rejection.
+  private async executeTabScript(tabId: number, details: { code: string }) {
+    let lastError: unknown;
+    const attempts = TAB_SCRIPT_RETRY_DELAYS_MS.length + 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (attempt > 0) {
+        await sleep(TAB_SCRIPT_RETRY_DELAYS_MS[attempt - 1]);
+      }
+      try {
+        return await browser.tabs.executeScript(tabId, details);
+      } catch (error) {
+        lastError = error;
+        if (!isHostPermissionError(error)) {
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+      }
+    }
+    try {
+      const tab = await browser.tabs.get(tabId);
+      await this.checkForUrlPermission(tab.url);
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(String(lastError));
+  }
+
   private async loadTab(correlationId: string, tabId: number): Promise<void> {
     const tab = await browser.tabs.get(tabId);
     if (tab.discarded) {
       await this.waitForTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+      await this.waitForTabUrlSettled(tabId, TAB_URL_SETTLE_TIMEOUT_MS);
     }
     await this.client.sendResourceToServer({
       resource: "tab-loaded",
@@ -454,11 +555,12 @@ export class MessageHandler {
     let loaded = false;
     if (tab.discarded) {
       await this.waitForTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+      await this.waitForTabUrlSettled(tabId, TAB_URL_SETTLE_TIMEOUT_MS);
       loaded = true;
     }
 
     const MAX_CONTENT_LENGTH = 50_000;
-    const results = await browser.tabs.executeScript(tabId, {
+    const results = await this.executeTabScript(tabId, {
       code: `
       (function () {
         function getLinks() {

@@ -79,7 +79,9 @@ export const BROKER_COMMANDS: {
   },
   "get-tab-content": {
     resource: "tab-content",
-    timeoutMs: DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS,
+    // A discarded tab is reloaded on demand before its content is read;
+    // the round trip needs the same budget as load-tab, not the default.
+    timeoutMs: TAB_LOAD_RESPONSE_TIMEOUT_MS,
     validate: (message) =>
       isNumber(message.tabId) &&
       (message.offset === undefined || isNumber(message.offset)),

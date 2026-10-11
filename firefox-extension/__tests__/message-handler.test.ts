@@ -467,6 +467,7 @@ describe("MessageHandler", () => {
           id: 123,
           url: "https://example.com",
           discarded: true,
+          status: "complete",
         };
         (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
         (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
@@ -500,6 +501,120 @@ describe("MessageHandler", () => {
           totalLength: 12,
           loaded: true,
         });
+      });
+
+      it("should retry a script injection rejected with the transient host permission error", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+          status: "complete",
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+
+        const mockScriptResult = [
+          {
+            links: [{ url: "https://example.com/page", text: "Page" }],
+            fullText: "Page content",
+            isTruncated: false,
+            totalLength: 12,
+          },
+        ];
+        // The first injection fails with Firefox's generic error for the
+        // navigation race (bug 2047009); the retry succeeds.
+        (browser.tabs.executeScript as jest.Mock)
+          .mockRejectedValueOnce(
+            new Error("Missing host permission for the tab or frames")
+          )
+          .mockResolvedValue(mockScriptResult);
+        mockReloadCompletingLoad(123);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.executeScript).toHaveBeenCalledTimes(2);
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+          isTruncated: false,
+          fullText: "Page content",
+          links: [{ url: "https://example.com/page", text: "Page" }],
+          totalLength: 12,
+          loaded: true,
+        });
+      });
+
+      it("should re-check the settled URL permissions after the script injection retries are exhausted", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+          status: "complete",
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+        (browser.tabs.executeScript as jest.Mock).mockRejectedValue(
+          new Error("Missing host permission for the tab or frames")
+        );
+        mockReloadCompletingLoad(123);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Missing host permission for the tab or frames");
+        // Initial attempt plus the four backoff retries.
+        expect(browser.tabs.executeScript).toHaveBeenCalledTimes(5);
+        // Pre-reload check plus the re-check against the settled URL.
+        expect(browser.permissions.contains).toHaveBeenCalledTimes(2);
+      }, 15000);
+
+      it("should not retry a script injection error that is not the host permission race", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+          status: "complete",
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+        (browser.tabs.executeScript as jest.Mock).mockRejectedValue(
+          new Error(
+            "Could not establish connection. Receiving end does not exist."
+          )
+        );
+        mockReloadCompletingLoad(123);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(
+          "Could not establish connection. Receiving end does not exist."
+        );
+        expect(browser.tabs.executeScript).toHaveBeenCalledTimes(1);
       });
 
       it("should throw an error if tab URL domain is in deny list", async () => {
@@ -572,6 +687,7 @@ describe("MessageHandler", () => {
           id: 123,
           url: "https://example.com",
           discarded: true,
+          status: "complete",
         };
         (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
         mockReloadCompletingLoad(123);
@@ -587,6 +703,78 @@ describe("MessageHandler", () => {
           tabId: 123,
         });
       });
+
+      it("should wait for the tab URL to settle after reloading a discarded tab", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const discardedTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+        };
+        const transitionalTab = {
+          id: 123,
+          url: "about:blank",
+          discarded: false,
+          status: "complete",
+        };
+        const settledTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: false,
+          status: "complete",
+        };
+        // The audit log fetches the tab before the handler does, so the
+        // first get returns the discarded tab as well.
+        (browser.tabs.get as jest.Mock)
+          .mockResolvedValueOnce(discardedTab)
+          .mockResolvedValueOnce(discardedTab)
+          .mockResolvedValueOnce(transitionalTab)
+          .mockResolvedValue(settledTab);
+        mockReloadCompletingLoad(123);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-loaded",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+        });
+      });
+
+      it("should fail if the tab URL never settles after reloading a discarded tab", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "about:blank",
+          discarded: true,
+          status: "complete",
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        mockReloadCompletingLoad(123);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(
+          "Timed out waiting for tab 123 to settle on a final URL after reload"
+        );
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      }, 15000);
 
       it("should not reload a tab that is already loaded", async () => {
         // Arrange
