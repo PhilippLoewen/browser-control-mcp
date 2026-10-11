@@ -3,6 +3,7 @@ import * as crypto from "node:crypto";
 import WebSocket from "ws";
 
 import type {
+  ChildPlacement,
   ExtensionMessage,
   BrowserTab,
   BrowserHistoryItem,
@@ -42,7 +43,8 @@ import {
 } from "./broker-commands";
 
 const WS_DEFAULT_PORT = 8089;
-const BROKER_REQUEST_TIMEOUT_MS = 15000;
+// Covers the leader's longest extension budget (TAB_STRUCTURE_RESPONSE_TIMEOUT_MS).
+const BROKER_REQUEST_TIMEOUT_MS = 35000;
 // How long to wait at startup for an existing broker socket to appear.
 const BROKER_STARTUP_WAIT_MS = 1000;
 // How long to wait for the extension to reconnect after the broker was
@@ -320,7 +322,7 @@ export class BrowserAPI {
   async closeTabs(
     tabIds: number[],
     keepChildren?: boolean,
-    childPlacement?: "promote" | "top-level"
+    childPlacement?: ChildPlacement
   ): Promise<TabsClosedExtensionMessage> {
     return await this.requestExtension(
       { cmd: "close-tabs", tabIds, keepChildren, childPlacement },

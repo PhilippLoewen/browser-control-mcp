@@ -219,7 +219,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "group-browser-tabs",
-  "Organize opened browser tabs in a new tab group. When Tree Style Tab is installed and enabled, a Tree Style Tab group tab is created instead (the groupColor option is then ignored), and isCollapsed collapses that group's tree. The group tab is placed where the first of the tabs was: under the parent all the tabs shared, or at the top level when they did not share one. The result reports how many of the tabs actually ended up in the group, and is an error listing the tabs that were not grouped.",
+  "Organize opened browser tabs in a new tab group. When Tree Style Tab is installed and enabled, a Tree Style Tab group tab is created instead (the groupColor option is then ignored), and isCollapsed collapses that group's tree. The group tab is inserted before the first of the tabs, under the parent the tabs shared, or at the top level when they did not share one. The result reports how many of the tabs actually ended up in the group, and is an error listing the tabs that were not grouped.",
   {
     tabIds: z.array(z.number()),
     isCollapsed: z.boolean().default(false),

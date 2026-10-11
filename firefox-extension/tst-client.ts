@@ -19,7 +19,7 @@ export const TST_ADDON_ID = "treestyletab@piro.sakura.ne.jp";
 // How long to wait for TST to respond to a command message.
 export const TST_REQUEST_TIMEOUT_MS = 3000;
 // Grouping and closing tabs move many tabs within TST and can take
-// noticeably longer than a query; this stays below the server's 10 s
+// noticeably longer than a query; this stays well below the server's
 // budget for tab structure commands, leaving room for the read-back.
 export const TST_WRITE_REQUEST_TIMEOUT_MS = 6000;
 // How often to retry registration while TST is unavailable.

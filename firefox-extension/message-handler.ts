@@ -1,4 +1,4 @@
-import type { ServerMessageRequest } from "@browser-control-mcp/common";
+import type { ChildPlacement, ServerMessageRequest } from "@browser-control-mcp/common";
 import type { BrowserTab } from "@browser-control-mcp/common/extension-messages";
 import { WebsocketClient } from "./client";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry } from "./extension-config";
@@ -260,7 +260,7 @@ export class MessageHandler {
     correlationId: string,
     tabIds: number[],
     keepChildren?: boolean,
-    childPlacement: "promote" | "top-level" = "promote"
+    childPlacement: ChildPlacement = "promote"
   ): Promise<void> {
     // With Tree Style Tab, closing a tab whose tree is collapsed would also
     // close its hidden child tabs. Use TST's command to close only the
@@ -295,7 +295,7 @@ export class MessageHandler {
   private async closeTabsKeepingChildren(
     correlationId: string,
     tabIds: number[],
-    childPlacement: "promote" | "top-level"
+    childPlacement: ChildPlacement
   ): Promise<void> {
     const tst = this.tst!;
     const before = await this.readTree(await this.windowIdsOf(tabIds));
@@ -354,11 +354,16 @@ export class MessageHandler {
       return;
     }
 
-    const { tree, settled } = await this.waitForTree(windowIds, (tree) =>
-      [...expectedParents].every(
-        ([childId, parentId]) =>
-          tree.has(childId) && tree.get(childId)!.parentTabId === parentId
-      )
+    // The kept children are in the windows of the closed tabs, so the
+    // closed tabs' absence can be checked in the same trees.
+    const { tree, settled } = await this.waitForTree(
+      windowIds,
+      (tree) =>
+        tabIds.every((tabId) => !tree.has(tabId)) &&
+        [...expectedParents].every(
+          ([childId, parentId]) =>
+            tree.has(childId) && tree.get(childId)!.parentTabId === parentId
+        )
     );
     await this.client.sendResourceToServer({
       resource: "tabs-closed",
@@ -1497,15 +1502,20 @@ export class MessageHandler {
       }
       return false;
     };
-    const grouping = await this.waitForTree(windowIds, (tree) =>
-      tabIds.every((tabId) => isMember(tree, tabId))
-    );
+    const allGrouped = (tree: Map<number, TreeNode>): boolean =>
+      tabIds.every((tabId) => isMember(tree, tabId));
+    const grouping = await this.waitForTree(windowIds, allGrouped);
     let tree = grouping.tree;
     let verified = grouping.settled;
 
     if (before && tree?.has(groupId)) {
+      // Only the top tabs of the selection (whose parent is not grouped
+      // too) are attached to the group tab, so only their parents count.
+      const selected = new Set(tabIds);
       const originalParents = new Set(
-        tabIds.map((tabId) => before.get(tabId)?.parentTabId)
+        tabIds
+          .map((tabId) => before.get(tabId)?.parentTabId)
+          .filter((parentId) => parentId === undefined || !selected.has(parentId))
       );
       const expectedParent =
         originalParents.size === 1 ? [...originalParents][0] : undefined;
@@ -1521,7 +1531,9 @@ export class MessageHandler {
         }
         const placing = await this.waitForTree(
           windowIds,
-          (tree) => tree.get(groupId)?.parentTabId === expectedParent
+          (tree) =>
+            tree.get(groupId)?.parentTabId === expectedParent &&
+            (!verified || allGrouped(tree))
         );
         tree = placing.tree;
         verified = verified && placing.settled;

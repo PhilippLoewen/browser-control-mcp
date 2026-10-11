@@ -9,17 +9,20 @@ export interface OpenTabServerMessage extends ServerMessageBase {
   parentTabId?: number;
 }
 
+/**
+ * Where the kept child tabs of a closed tab go: "promote" moves them to the
+ * closed tab's parent, or to the top level for a root tab; "top-level"
+ * always moves them to the top level. Each child keeps its own subtree.
+ */
+export type ChildPlacement = "promote" | "top-level";
+
 export interface CloseTabsServerMessage extends ServerMessageBase {
   cmd: "close-tabs";
   tabIds: number[];
   /** When Tree Style Tab is available, keep the child tabs of the closed tabs. */
   keepChildren?: boolean;
-  /**
-   * Where kept child tabs go: "promote" (default) moves them to the closed
-   * tab's parent, or to the top level for a root tab; "top-level" always
-   * moves them to the top level. Each child keeps its own subtree.
-   */
-  childPlacement?: "promote" | "top-level";
+  /** Where kept child tabs go; defaults to "promote". */
+  childPlacement?: ChildPlacement;
 }
 
 export interface GetTabListServerMessage extends ServerMessageBase {

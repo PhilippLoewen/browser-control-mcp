@@ -2901,6 +2901,39 @@ describe("MessageHandler", () => {
           );
         });
 
+        it("should judge the group's place by the top tabs of the selection only", async () => {
+          // Arrange: 50 > 123 > 456. 456's parent is itself grouped, so the
+          // tabs share parent 50 and the group stays there.
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.createGroup.mockResolvedValue(789);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([
+            { id: 123, windowId: 1 },
+            { id: 456, windowId: 1 },
+          ]);
+          const subtree = [{ id: 123, children: [{ id: 456, children: [] }] }];
+          mockTst.getLightTree
+            .mockResolvedValueOnce([{ id: 50, children: subtree }])
+            .mockResolvedValue([
+              { id: 50, children: [{ id: 789, children: subtree }] },
+            ]);
+
+          // Act
+          await tstHandler.handleDecodedMessage({
+            cmd: "group-tabs",
+            tabIds: [123, 456],
+            isCollapsed: false,
+            groupColor: "grey",
+            groupTitle: "My group",
+            correlationId: "test-correlation-id",
+          });
+
+          // Assert
+          expect(mockTst.detachTab).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
+            expect.objectContaining({ parentTabId: 50, verified: true })
+          );
+        });
+
         it("should not collapse the TST group when not requested", async () => {
           // Arrange
           mockTst.isAvailable.mockReturnValue(true);

@@ -294,11 +294,17 @@ never re-issued.
 - `mcp-server/broker-commands.ts:63-67`, `:100-108`: give `close-tabs`,
   `group-tabs`, and `reorder-tabs` `TAB_STRUCTURE_RESPONSE_TIMEOUT_MS`. Raise
   that constant to cover the settle poll, for example 10 s.
+  *As implemented:* 30 s (with `open-tab` and the tab list at 30 s too, since
+  they can wait behind the write lock, and the broker forwarding timeout at
+  35 s). The worst case of a group call alone exceeds 15 s.
 - `firefox-extension/tst-client.ts:20`, `:192-204`: allow a longer timeout for
   the mutating commands (`group-tabs`, `remove-tab-keeping-children`), and do
   **not** `markUnavailable()` on a timeout. A timeout is not proof that TST is
   gone; a rejected `sendMessage` is. Return a distinct
   `"timeout"` result so callers can tell the two cases apart.
+  *As implemented:* no distinct result. Once the group and keep-children
+  close paths stopped falling back, every caller reports both cases the same
+  honest way ("may still have been applied, check the tab list").
 - `mcp-server/browser-api.ts:516-532`: guard `extensionRequestMap.get(...)`
   for late or unknown correlation ids. Log and drop them instead of throwing.
 

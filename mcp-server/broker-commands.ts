@@ -10,13 +10,15 @@ export const DEFAULT_EXTENSION_RESPONSE_TIMEOUT_MS = 1000;
 // round trip per window, and the extension first waits for pending tab
 // structure writes to finish, so it may take noticeably longer than the
 // other commands.
-export const TAB_LIST_RESPONSE_TIMEOUT_MS = 10000;
+export const TAB_LIST_RESPONSE_TIMEOUT_MS = 30000;
 // Commands that change the tab structure run one at a time in the
 // extension and may wait for the previous one. With Tree Style Tab they
 // involve a round trip per tab, or a TST command that moves many tabs
-// followed by reading the tree back until it has settled, so allow more
-// time than the default. Must stay below BROKER_REQUEST_TIMEOUT_MS.
-export const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 10000;
+// followed by reading the tree back until it has settled (grouping alone
+// can take over 15 s in the worst case), so allow much more time than the
+// default: a server-side timeout does not stop the extension from
+// applying the write. Must stay below BROKER_REQUEST_TIMEOUT_MS.
+export const TAB_STRUCTURE_RESPONSE_TIMEOUT_MS = 30000;
 // Capturing may foreground the tab, wait for it to paint, encode the image
 // and transfer a payload orders of magnitude larger than the other responses.
 export const SCREENSHOT_RESPONSE_TIMEOUT_MS = 10000;
