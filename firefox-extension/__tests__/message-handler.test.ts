@@ -2277,6 +2277,59 @@ describe("MessageHandler", () => {
           });
         });
 
+        it("should not anchor the kept children on a tab that is closed too", async () => {
+          // Arrange: 1 > (5 > 6, 10 > 11), closing 6 and 10. 11 goes after
+          // 5's subtree, which no longer contains 6.
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([
+            { id: 6, windowId: 1 },
+            { id: 10, windowId: 1 },
+          ]);
+          mockTst.getLightTree
+            .mockResolvedValueOnce([
+              {
+                id: 1,
+                children: [
+                  { id: 5, children: [{ id: 6, children: [] }] },
+                  { id: 10, children: [{ id: 11, children: [] }] },
+                ],
+              },
+            ])
+            .mockResolvedValueOnce([
+              { id: 1, children: [{ id: 5, children: [] }] },
+              { id: 11, children: [] },
+            ])
+            .mockResolvedValue([
+              {
+                id: 1,
+                children: [
+                  { id: 5, children: [] },
+                  { id: 11, children: [] },
+                ],
+              },
+            ]);
+
+          // Act
+          await tstHandler.handleDecodedMessage({
+            cmd: "close-tabs",
+            tabIds: [6, 10],
+            keepChildren: true,
+            correlationId: "test-correlation-id",
+          });
+
+          // Assert
+          expect(mockTst.attachTabToParent).toHaveBeenCalledTimes(1);
+          expect(mockTst.attachTabToParent).toHaveBeenCalledWith(11, 1, {
+            insertAfter: 5,
+          });
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
+            expect.objectContaining({
+              reparented: [{ tabId: 11, parentTabId: 1 }],
+              verified: true,
+            })
+          );
+        });
+
         it("should move the children of a closed last child under its parent", async () => {
           // Arrange: 1 > 10 > (11, 12), with nothing after 10 under 1.
           mockTst.isAvailable.mockReturnValue(true);
@@ -3238,6 +3291,54 @@ describe("MessageHandler", () => {
               missingTabIds: [],
               parentTabId: 141,
               intendedParentTabId: 124,
+              verified: false,
+            });
+          } finally {
+            jest.useRealTimers();
+          }
+        });
+
+        it("should not move the group tab because of a requested tab that does not exist", async () => {
+          jest.useFakeTimers();
+          try {
+            // Arrange: 50 > 123; tab 999 does not exist.
+            mockTst.isAvailable.mockReturnValue(true);
+            mockTst.createGroup.mockResolvedValue(789);
+            (browser.tabs.query as jest.Mock).mockResolvedValue([
+              { id: 123, windowId: 1 },
+            ]);
+            mockTst.getLightTree
+              .mockResolvedValueOnce([
+                { id: 50, children: [{ id: 123, children: [] }] },
+              ])
+              .mockResolvedValue([
+                {
+                  id: 50,
+                  children: [{ id: 789, children: [{ id: 123, children: [] }] }],
+                },
+              ]);
+
+            // Act
+            const grouping = tstHandler.handleDecodedMessage({
+              cmd: "group-tabs",
+              tabIds: [123, 999],
+              isCollapsed: false,
+              groupColor: "grey",
+              groupTitle: "My group",
+              correlationId: "test-correlation-id",
+            });
+            await jest.advanceTimersByTimeAsync(5_000);
+            await grouping;
+
+            // Assert
+            expect(mockTst.detachTab).not.toHaveBeenCalled();
+            expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+              resource: "new-tab-group",
+              correlationId: "test-correlation-id",
+              groupId: 789,
+              memberTabIds: [123],
+              missingTabIds: [999],
+              parentTabId: 50,
               verified: false,
             });
           } finally {

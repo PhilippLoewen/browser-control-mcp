@@ -181,10 +181,11 @@ test("opening a child tab says where it is when TST had not attached it yet", ()
   assert.match(text, /had not attached it to the requested parent/);
 });
 
-test("opening a child tab whose tree could not be read says so", () => {
+test("opening a child tab missing from the tree says its place is unknown, without blaming the tree read", () => {
   const text = formatOpenResult("https://a.com", { tabId: 5, verified: false });
 
   assert.match(text, /could not be verified/);
+  assert.match(text, /not listed in the tab tree yet/);
 });
 
 test("closing tabs reports where the kept child tabs ended up", () => {

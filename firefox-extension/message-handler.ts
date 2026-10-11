@@ -50,13 +50,22 @@ interface TreeNode {
   childIds: number[];
 }
 
-/** The last tab in the subtree of the given tab (the tab itself without children). */
-function lastDescendant(tree: Map<number, TreeNode>, tabId: number): number {
+/**
+ * The last tab in the subtree of the given tab (the tab itself without
+ * children), ignoring the given closed tabs.
+ */
+function lastDescendant(
+  tree: Map<number, TreeNode>,
+  tabId: number,
+  closed: Set<number>
+): number {
+  const openChildIds = (id: number) =>
+    (tree.get(id)?.childIds ?? []).filter((childId) => !closed.has(childId));
   let last = tabId;
-  let childIds = tree.get(last)?.childIds ?? [];
+  let childIds = openChildIds(last);
   while (childIds.length > 0) {
     last = childIds[childIds.length - 1];
-    childIds = tree.get(last)?.childIds ?? [];
+    childIds = openChildIds(last);
   }
   return last;
 }
@@ -87,11 +96,11 @@ function positionsInPlaceOf(
     .find((siblingId) => !closed.has(siblingId));
   let anchor =
     previousSibling !== undefined
-      ? lastDescendant(before, previousSibling)
+      ? lastDescendant(before, previousSibling, closed)
       : parentId;
   return keptChildren.map((childId) => {
     const position = { insertAfter: anchor };
-    anchor = lastDescendant(before, childId);
+    anchor = lastDescendant(before, childId, closed);
     return position;
   });
 }
@@ -479,8 +488,9 @@ export class MessageHandler {
       }
     }
 
-    // The kept children are in the windows of the closed tabs, so the
-    // closed tabs' absence can be checked in the same trees.
+    // Only the windows holding kept children are read, so the closed tabs'
+    // absence is checked for the closed tabs in those windows (the ones
+    // whose children are being placed).
     const { tree, settled } = await this.waitForTree(
       windowIds,
       (tree) =>
@@ -1638,10 +1648,12 @@ export class MessageHandler {
     if (before && tree?.has(groupId)) {
       // Only the top tabs of the selection (whose parent is not grouped
       // too) are attached to the group tab, so only their parents count.
+      // Tabs that did not exist cannot be grouped and do not count either.
       const selected = new Set(tabIds);
       const originalParents = new Set(
         tabIds
-          .map((tabId) => before.get(tabId)?.parentTabId)
+          .filter((tabId) => before.has(tabId))
+          .map((tabId) => before.get(tabId)!.parentTabId)
           .filter((parentId) => parentId === undefined || !selected.has(parentId))
       );
       const expectedParent =

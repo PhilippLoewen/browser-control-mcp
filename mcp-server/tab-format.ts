@@ -166,7 +166,10 @@ export function formatOpenResult(
     return text;
   }
   if (opened.parentTabId === undefined) {
-    return `${text}; its place in the tab tree could not be verified because the tree could not be read`;
+    return (
+      `${text}; its place in the tab tree could not be verified (the tree could not be read, ` +
+      "or the tab was not listed in the tab tree yet); check it with get-list-of-open-tabs"
+    );
   }
   const position =
     opened.parentTabId === null ? "at the top level" : `under tab ${opened.parentTabId}`;
