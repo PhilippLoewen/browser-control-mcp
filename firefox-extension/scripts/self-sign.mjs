@@ -14,6 +14,7 @@
  *   npm run release:local          sign + upload to the fork release + bump update.json
  *   node scripts/self-sign.mjs --dry-run    stage only, print what would ship
  *   node scripts/self-sign.mjs --no-build   skip the esbuild step
+ *   node scripts/self-sign.mjs --no-sign    skip web-ext sign; reuse the newest existing XPI in web-ext-artifacts/
  *   node scripts/self-sign.mjs --channel=unlisted
  *   node scripts/self-sign.mjs --upload            also upload the signed XPI to the fork release
  *   node scripts/self-sign.mjs --update-manifest   also update self-distribution/update.json
@@ -74,6 +75,7 @@ function parseArgs(argv) {
   const args = {
     dryRun: false,
     noBuild: false,
+    noSign: false,
     upload: false,
     updateManifest: false,
     channel: 'unlisted',
@@ -85,6 +87,8 @@ function parseArgs(argv) {
       args.dryRun = true;
     } else if (arg === '--no-build') {
       args.noBuild = true;
+    } else if (arg === '--no-sign') {
+      args.noSign = true;
     } else if (arg === '--upload') {
       args.upload = true;
     } else if (arg === '--update-manifest') {
@@ -103,7 +107,7 @@ function parseArgs(argv) {
     } else if (arg.startsWith('--channel=')) {
       args.channel = arg.slice('--channel='.length);
     } else {
-      fail(`unknown argument: ${arg} (supported: --dry-run, --no-build, --upload, --update-manifest, --channel=<unlisted|listed>, --config=<path>)`);
+      fail(`unknown argument: ${arg} (supported: --dry-run, --no-build, --no-sign, --upload, --update-manifest, --channel=<unlisted|listed>, --config=<path>)`);
     }
   }
   if (!['unlisted', 'listed'].includes(args.channel)) {
@@ -144,7 +148,7 @@ function loadConfig(configPath) {
     Array.isArray(config.dataCollectionPermissions) && config.dataCollectionPermissions.length
       ? config.dataCollectionPermissions
       : ['none'];
-  return { guid, updateUrl, dataCollectionPermissions };
+  return { guid, updateUrl, dataCollectionPermissions, github: config.github };
 }
 
 function runBuild() {
@@ -367,29 +371,33 @@ async function main() {
     return;
   }
 
-  console.log(`==> Signing with web-ext (channel: ${args.channel})`);
-  const result = spawnSync(
-    'npx',
-    [
-      '--yes',
-      '--package',
-      'web-ext@10',
-      'web-ext',
-      'sign',
-      '--source-dir',
-      stagingDir,
-      '--channel',
-      args.channel,
-      '--artifacts-dir',
-      path.join(extRoot, 'web-ext-artifacts'),
-      '--ignore-files',
-      path.join(extRoot, 'xpi.ignore'),
-    ],
-    { stdio: 'inherit' },
-  );
-  if (result.error) fail(`could not run web-ext: ${result.error.message}`);
-  if (result.status !== 0) {
-    fail('web-ext sign failed — check the output above (are AMO credentials set via WEB_EXT_API_KEY / WEB_EXT_API_SECRET or ~/.web-ext/config.js?)');
+  if (args.noSign) {
+    console.log('==> Skipping web-ext sign (--no-sign); will reuse the newest existing XPI in web-ext-artifacts/');
+  } else {
+    console.log(`==> Signing with web-ext (channel: ${args.channel})`);
+    const result = spawnSync(
+      'npx',
+      [
+        '--yes',
+        '--package',
+        'web-ext@10',
+        'web-ext',
+        'sign',
+        '--source-dir',
+        stagingDir,
+        '--channel',
+        args.channel,
+        '--artifacts-dir',
+        path.join(extRoot, 'web-ext-artifacts'),
+        '--ignore-files',
+        path.join(extRoot, 'xpi.ignore'),
+      ],
+      { stdio: 'inherit' },
+    );
+    if (result.error) fail(`could not run web-ext: ${result.error.message}`);
+    if (result.status !== 0) {
+      fail('web-ext sign failed — check the output above (are AMO credentials set via WEB_EXT_API_KEY / WEB_EXT_API_SECRET or ~/.web-ext/config.js?)');
+    }
   }
 
   const slug = manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -401,8 +409,23 @@ async function main() {
     .map((f) => ({ f, mtime: statSync(path.join(artifactDir, f)).mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime)
     .map((x) => x.f);
-  if (xpis.length === 0) fail('signing finished but no .xpi was found in ' + artifactDir);
+  if (xpis.length === 0) {
+    fail(
+      args.noSign
+        ? `no existing .xpi found in ${artifactDir} — run a full sign first (npm run sign:local, or release:local without --no-sign)`
+        : `signing finished but no .xpi was found in ${artifactDir}`,
+    );
+  }
   const assetName = `${slug}-${manifest.version}.xpi`;
+  if (args.noSign) {
+    const xpiFile = xpis[0];
+    const parsedVersion = xpiFile.match(/-(\d+\.\d+(?:\.\d+)?)\.xpi$/);
+    if (!parsedVersion) {
+      console.warn(`self-sign: warning: could not parse a version from "${xpiFile}"; confirm it is the ${manifest.version} build before relying on this upload`);
+    } else if (parsedVersion[1] !== manifest.version) {
+      fail(`--no-sign: newest existing XPI "${xpiFile}" is version ${parsedVersion[1]}, but the manifest is ${manifest.version} — sign fresh (drop --no-sign) or clear the stale build from web-ext-artifacts/`);
+    }
+  }
 
   if (args.upload || args.updateManifest) {
     const gh = githubConfig(config);
