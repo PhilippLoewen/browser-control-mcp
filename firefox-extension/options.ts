@@ -61,14 +61,14 @@ async function loadSecret() {
     } else {
       secretDisplay.textContent =
         "No secret found. Please reinstall the extension.";
-      secretDisplay.style.color = "red";
+      secretDisplay.style.color = "var(--error)";
       copyButton.disabled = true;
     }
   } catch (error) {
     console.error("Error loading secret:", error);
     secretDisplay.textContent =
       "Error loading secret. Please check console for details.";
-    secretDisplay.style.color = "red";
+    secretDisplay.style.color = "var(--error)";
     copyButton.disabled = true;
   }
 }
@@ -101,7 +101,7 @@ async function copyToClipboard(event: MouseEvent) {
   } catch (error) {
     console.error("Error copying to clipboard:", error);
     statusElement.textContent = "Failed to copy to clipboard";
-    statusElement.style.color = "red";
+    statusElement.style.color = "var(--error)";
     setTimeout(() => {
       statusElement.textContent = "";
       statusElement.style.color = "";
@@ -197,7 +197,7 @@ async function loadDomainLists() {
     console.error("Error loading domain lists:", error);
     domainStatusElement.textContent =
       "Error loading domain lists. Please check console for details.";
-    domainStatusElement.style.color = "red";
+    domainStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       domainStatusElement.textContent = "";
       domainStatusElement.style.color = "";
@@ -228,7 +228,7 @@ async function saveDomainLists(event: MouseEvent) {
 
     // Show success message
     domainStatusElement.textContent = "Domain deny list saved successfully!";
-    domainStatusElement.style.color = "#4caf50";
+    domainStatusElement.style.color = "var(--success)";
     setTimeout(() => {
       domainStatusElement.textContent = "";
       domainStatusElement.style.color = "";
@@ -236,7 +236,7 @@ async function saveDomainLists(event: MouseEvent) {
   } catch (error) {
     console.error("Error saving domain lists:", error);
     domainStatusElement.textContent = "Failed to save domain lists";
-    domainStatusElement.style.color = "red";
+    domainStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       domainStatusElement.textContent = "";
       domainStatusElement.style.color = "";
@@ -255,7 +255,7 @@ async function loadPorts() {
     console.error("Error loading ports:", error);
     portsStatusElement.textContent =
       "Error loading ports. Please check console for details.";
-    portsStatusElement.style.color = "red";
+    portsStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       portsStatusElement.textContent = "";
       portsStatusElement.style.color = "";
@@ -304,7 +304,7 @@ async function savePorts(event: MouseEvent) {
   } catch (error) {
     console.error("Error saving ports:", error);
     portsStatusElement.textContent = error instanceof Error ? error.message : "Failed to save ports";
-    portsStatusElement.style.color = "red";
+    portsStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       portsStatusElement.textContent = "";
       portsStatusElement.style.color = "";
@@ -324,7 +324,7 @@ async function loadTstIntegrationMode() {
     console.error("Error loading Tree Style Tab integration mode:", error);
     tstStatusElement.textContent =
       "Error loading Tree Style Tab setting. Please check console for details.";
-    tstStatusElement.style.color = "red";
+    tstStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       tstStatusElement.textContent = "";
       tstStatusElement.style.color = "";
@@ -347,7 +347,7 @@ async function saveTstIntegrationMode(event: MouseEvent) {
     // Show success message
     tstStatusElement.textContent =
       "Tree Style Tab setting saved! The background script applies it immediately.";
-    tstStatusElement.style.color = "#4caf50";
+    tstStatusElement.style.color = "var(--success)";
     setTimeout(() => {
       tstStatusElement.textContent = "";
       tstStatusElement.style.color = "";
@@ -355,7 +355,7 @@ async function saveTstIntegrationMode(event: MouseEvent) {
   } catch (error) {
     console.error("Error saving Tree Style Tab integration mode:", error);
     tstStatusElement.textContent = "Failed to save Tree Style Tab setting";
-    tstStatusElement.style.color = "red";
+    tstStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       tstStatusElement.textContent = "";
       tstStatusElement.style.color = "";
@@ -399,7 +399,7 @@ async function updateTstStatus() {
   const version = await getTstVersion();
   if (version !== null) {
     tstStatusElement.textContent = `Tree Style Tab is installed and enabled (version ${version}).`;
-    tstStatusElement.style.color = "#4caf50";
+    tstStatusElement.style.color = "var(--success)";
   } else {
     tstStatusElement.textContent =
       "Tree Style Tab is not installed or not enabled. The standard browser tab APIs will be used.";
@@ -507,7 +507,7 @@ async function handleClearAuditLog(event: MouseEvent) {
     
     // Show success message
     auditLogStatusElement.textContent = "Audit log cleared successfully!";
-    auditLogStatusElement.style.color = "#4caf50";
+    auditLogStatusElement.style.color = "var(--success)";
     setTimeout(() => {
       auditLogStatusElement.textContent = "";
       auditLogStatusElement.style.color = "";
@@ -515,7 +515,7 @@ async function handleClearAuditLog(event: MouseEvent) {
   } catch (error) {
     console.error("Error clearing audit log:", error);
     auditLogStatusElement.textContent = "Failed to clear audit log";
-    auditLogStatusElement.style.color = "red";
+    auditLogStatusElement.style.color = "var(--error)";
     setTimeout(() => {
       auditLogStatusElement.textContent = "";
       auditLogStatusElement.style.color = "";
