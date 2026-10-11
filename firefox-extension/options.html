@@ -5,6 +5,36 @@
   <meta charset="utf-8">
   <title>Browser Control MCP Options</title>
   <style>
+    :root {
+      /* Light palette (default) */
+      --bg-page: #ffffff;
+      --bg-panel: #f9f9f9;
+      --bg-card: #ffffff;
+      --bg-code: #f5f5f5;
+      --bg-secondary-button: #f1f3f4;
+      --bg-secondary-button-hover: #e8eaed;
+      --border: #dddddd;
+      --border-subtle: #eeeeee;
+      --border-code: #e0e0e0;
+      --border-secondary: #dadce0;
+      --text-primary: #333333;
+      --text-secondary: #666666;
+      --text-tertiary: #999999;
+      --accent: #4285f4;
+      --accent-hover: #3367d6;
+      --success: #4caf50;
+      --error: #ff0000;
+      --slider-track: #cccccc;
+      --slider-knob: #ffffff;
+      --modal-bg: #ffffff;
+    }
+
+    html {
+      background-color: var(--bg-page);
+      /* Adapt native form controls and scrollbars to the user's theme */
+      color-scheme: light dark;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
       padding: 20px;
@@ -13,21 +43,21 @@
     }
 
     .container {
-      background-color: #f9f9f9;
+      background-color: var(--bg-panel);
       border-radius: 8px;
       padding: 20px;
       box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
 
     h1 {
-      color: #333;
+      color: var(--text-primary);
       margin-top: 0;
     }
 
     h2 {
       margin-top: 12px;
       margin-bottom: 8px;
-      color: #333;
+      color: var(--text-primary);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -50,8 +80,8 @@
 
     .section-container {
       margin-top: 20px;
-      background-color: #fff;
-      border: 1px solid #ddd;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 4px;
       padding: 15px;
     }
@@ -70,33 +100,79 @@
       padding-bottom: 0;
     }
 
+    .option-heading {
+      margin: 10px 0;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .primary-link-button {
+      display: inline-block;
+      background-color: var(--accent);
+      color: white;
+      padding: 8px 16px;
+      text-decoration: none;
+      border-radius: 4px;
+      margin: 5px 0;
+      font-size: 14px;
+    }
+
+    .primary-link-button:hover {
+      background-color: var(--accent-hover);
+    }
+
+    .secondary-link-button {
+      display: inline-block;
+      background-color: var(--bg-secondary-button);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      text-decoration: none;
+      border-radius: 4px;
+      border: 1px solid var(--border-secondary);
+      margin: 5px 0;
+      font-size: 14px;
+    }
+
+    .secondary-link-button:hover {
+      background-color: var(--bg-secondary-button-hover);
+    }
+
+    .ports-input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: monospace;
+      margin-bottom: 10px;
+    }
+
     .secret-value {
       font-family: monospace;
       word-break: break-all;
-      background-color: #f5f5f5;
+      background-color: var(--bg-code);
       padding: 10px;
       border-radius: 4px;
-      border: 1px solid #e0e0e0;
+      border: 1px solid var(--border-code);
     }
 
     .copy-button {
       margin-top: 10px;
-      background-color: #4285f4;
+      background-color: var(--accent);
       color: white;
       border: none;
-      padding: 8px 16px;  
+      padding: 8px 16px;
       border-radius: 4px;
       cursor: pointer;
       font-size: 14px;
     }
 
     .copy-button:hover {
-      background-color: #3367d6;
+      background-color: var(--accent-hover);
     }
 
     .status {
       margin-top: 10px;
-      color: #4caf50;
+      color: var(--success);
       font-size: 14px;
       height: 20px;
     }
@@ -106,7 +182,7 @@
       justify-content: space-between;
       align-items: center;
       padding: 10px 0;
-      border-bottom: 1px solid #eee;
+      border-bottom: 1px solid var(--border-subtle);
     }
 
     .tool-row:last-child {
@@ -125,7 +201,7 @@
 
     .tool-description {
       font-size: 14px;
-      color: #666;
+      color: var(--text-secondary);
     }
 
     /* Toggle switch styles */
@@ -149,7 +225,7 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background-color: #ccc;
+      background-color: var(--slider-track);
       transition: .4s;
       border-radius: 24px;
     }
@@ -161,17 +237,17 @@
       width: 16px;
       left: 4px;
       bottom: 4px;
-      background-color: white;
+      background-color: var(--slider-knob);
       transition: .4s;
       border-radius: 50%;
     }
 
     input:checked+.slider {
-      background-color: #4285f4;
+      background-color: var(--accent);
     }
 
     input:focus+.slider {
-      box-shadow: 0 0 1px #4285f4;
+      box-shadow: 0 0 1px var(--accent);
     }
 
     input:checked+.slider:before {
@@ -197,7 +273,7 @@
     }
 
     .permission-modal-content {
-      background-color: white;
+      background-color: var(--modal-bg);
       padding: 30px;
       border-radius: 8px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
@@ -209,7 +285,7 @@
     .permission-modal h2 {
       margin-top: 0;
       margin-bottom: 20px;
-      color: #333;
+      color: var(--text-primary);
       cursor: default;
     }
 
@@ -219,16 +295,16 @@
 
     .permission-modal p {
       margin-bottom: 20px;
-      color: #666;
+      color: var(--text-secondary);
       line-height: 1.5;
     }
 
     .permission-domain {
       font-family: monospace;
-      background-color: #f5f5f5;
+      background-color: var(--bg-code);
       padding: 8px 12px;
       border-radius: 4px;
-      border: 1px solid #e0e0e0;
+      border: 1px solid var(--border-code);
       display: inline-block;
       margin: 0 4px;
       font-weight: bold;
@@ -242,7 +318,7 @@
     }
 
     .grant-button {
-      background-color: #4285f4;
+      background-color: var(--accent);
       color: white;
       border: none;
       padding: 10px 20px;
@@ -253,13 +329,13 @@
     }
 
     .grant-button:hover {
-      background-color: #3367d6;
+      background-color: var(--accent-hover);
     }
 
     .cancel-button {
-      background-color: #f1f3f4;
-      color: #333;
-      border: 1px solid #dadce0;
+      background-color: var(--bg-secondary-button);
+      color: var(--text-primary);
+      border: 1px solid var(--border-secondary);
       padding: 10px 20px;
       border-radius: 4px;
       cursor: pointer;
@@ -267,7 +343,7 @@
     }
 
     .cancel-button:hover {
-      background-color: #e8eaed;
+      background-color: var(--bg-secondary-button-hover);
     }
 
     .main-content.modal-open {
@@ -287,17 +363,17 @@
     .audit-log-table td {
       padding: 8px 12px;
       text-align: left;
-      border-bottom: 1px solid #eee;
+      border-bottom: 1px solid var(--border-subtle);
     }
 
     .audit-log-table th {
-      background-color: #f5f5f5;
+      background-color: var(--bg-code);
       font-weight: bold;
-      color: #333;
+      color: var(--text-primary);
     }
 
     .audit-log-table td {
-      color: #666;
+      color: var(--text-secondary);
     }
 
     .audit-log-url {
@@ -316,9 +392,39 @@
 
     .audit-log-empty {
       text-align: center;
-      color: #999;
+      color: var(--text-tertiary);
       font-style: italic;
       padding: 20px;
+    }
+
+    /*
+     * Dark palette: overrides the light variables when the browser (and hence
+     * this extension page) is running in dark mode. All rules above reference
+     * the variables, so nothing else needs to change.
+     */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-page: #202124;
+        --bg-panel: #292a2d;
+        --bg-card: #323438;
+        --bg-code: #3a3d42;
+        --bg-secondary-button: #3c4043;
+        --bg-secondary-button-hover: #494d52;
+        --border: #4f545b;
+        --border-subtle: #3f4348;
+        --border-code: #4f545b;
+        --border-secondary: #5f6368;
+        --text-primary: #e8eaed;
+        --text-secondary: #9aa0a6;
+        --text-tertiary: #80868b;
+        --accent: #4285f4;
+        --accent-hover: #4d90fe;
+        --success: #81c784;
+        --error: #f28b82;
+        --slider-track: #5f6368;
+        --slider-knob: #ffffff;
+        --modal-bg: #323438;
+      }
     }
   </style>
 </head>
@@ -348,27 +454,25 @@
         <p>To use this extension, you need to install the local MCP server. Choose one of the following options:</p>
         
         <div style="margin: 15px 0;">
-          <h3 style="margin: 10px 0; font-size: 16px; color: #333;">Option 1: Download DXT Package (Claude Desktop only)</h3>
+          <h3 class="option-heading">Option 1: Download DXT Package (Claude Desktop only)</h3>
           <p>Download and open the pre-built DXT package:</p>
-          <a href="https://github.com/eyalzh/browser-control-mcp/releases/download/v1.5.2/mcp-server-v1.5.2.dxt" 
-             style="display: inline-block; background-color: #4285f4; color: white; padding: 8px 16px; 
-                    text-decoration: none; border-radius: 4px; margin: 5px 0; font-size: 14px;">
+          <a href="https://github.com/eyalzh/browser-control-mcp/releases/download/v1.5.2/mcp-server-v1.5.2.dxt"
+             class="primary-link-button">
             Download DXT Package
           </a>
         </div>
         
         <div style="margin: 15px 0;">
-          <h3 style="margin: 10px 0; font-size: 16px; color: #333;">Option 2: Manual MCP Installation</h3>
+          <h3 class="option-heading">Option 2: Manual MCP Installation</h3>
           <p>Follow the detailed setup instructions in the github repository:</p>
-          <a href="https://github.com/eyalzh/browser-control-mcp?tab=readme-ov-file#installation" 
+          <a href="https://github.com/eyalzh/browser-control-mcp?tab=readme-ov-file#installation"
              target="_blank" rel="noopener noreferrer"
-             style="display: inline-block; background-color: #f1f3f4; color: #333; padding: 8px 16px; 
-                    text-decoration: none; border-radius: 4px; border: 1px solid #dadce0; margin: 5px 0; font-size: 14px;">
+             class="secondary-link-button">
             View Installation Guide
           </a>
         </div>
         
-        <p style="margin-top: 15px; color: #666; font-size: 14px;">
+        <p style="margin-top: 15px; color: var(--text-secondary); font-size: 14px;">
           After installing the MCP server, you'll need to configure it with the secret key shown below.
         </p>
       </div>
@@ -389,7 +493,7 @@
       <h2>WebSocket Ports</h2>
       <div class="section-content">
         <p>Configure the WebSocket ports for MCP server connections (comma-separated list). Note: Changing this value will reload the extension.</p>
-        <input type="text" id="ports-input" placeholder="8089, 8090, 8091" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; margin-bottom: 10px;" />
+        <input type="text" id="ports-input" class="ports-input" placeholder="8089, 8090, 8091" />
         <button class="copy-button" id="save-ports">Save Ports</button>
         <div class="status" id="ports-status"></div>
       </div>
@@ -400,7 +504,7 @@
       <div class="section-content">
         <p>When the <a href="https://addons.mozilla.org/firefox/addon/tree-style-tab/" target="_blank" rel="noopener noreferrer">Tree Style Tab</a>
           add-on is installed and enabled, the extension can use its API to work with the tab tree:</p>
-        <ul style="font-size: 14px; color: #666; line-height: 1.5;">
+        <ul style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
           <li>New tabs are opened as children of the active tab</li>
           <li>The tab list is shown as an indented tree</li>
           <li>Grouping tabs creates Tree Style Tab groups</li>
