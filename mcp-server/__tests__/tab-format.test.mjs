@@ -110,6 +110,37 @@ test("a partially grouped TST group is an error naming the missing tabs", () => 
   assert.match(result.text, /had not settled/);
 });
 
+test("a TST group left under the wrong parent says where it belongs", () => {
+  const result = formatGroupResult("Docs", [1], {
+    groupId: 9,
+    memberTabIds: [1],
+    missingTabIds: [],
+    parentTabId: 141,
+    intendedParentTabId: 124,
+    verified: false,
+  });
+
+  assert.equal(result.isError, false);
+  assert.match(result.text, /nested under tab 141/);
+  assert.match(
+    result.text,
+    /Tree Style Tab kept the group tab there, although the grouped tabs shared parent tab 124/
+  );
+});
+
+test("a TST group that should be at the top level says so", () => {
+  const result = formatGroupResult("Docs", [1], {
+    groupId: 9,
+    memberTabIds: [1],
+    missingTabIds: [],
+    parentTabId: 141,
+    intendedParentTabId: null,
+    verified: false,
+  });
+
+  assert.match(result.text, /should be at the top level/);
+});
+
 test("a TST group whose tree could not be read says so", () => {
   const result = formatGroupResult("Docs", [1, 2], { groupId: 9, verified: false });
 

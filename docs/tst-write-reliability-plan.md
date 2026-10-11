@@ -390,3 +390,34 @@ Manual check in Firefox with TST (build with `npm run build`, load
   rather than silent.
 - Remove the `tabs.remove` fallback for `keepChildren: true`: on a collapsed
   tree it closes exactly the children the caller asked to keep.
+
+---
+
+## (d) Findings from the first browser test (2026-10-11)
+
+The read-back reported both remaining problems honestly. Root causes:
+
+- **`promote-all` is ignored by TST when sent through the API.**
+  - TST's internal value for it is `0`.
+  - `TabsInternalOperation.removeTabs` only stores the requested behavior
+    `if (keepDescendantsBehavior)` (`common/tabs-internal-operation.js:159`),
+    so `0` is dropped.
+  - `getParentTabOperationBehavior` then falls back to the user's
+    close-parent setting, which promotes the first child of a root tab.
+  - `detach-all` (`1`) is unaffected.
+  - Fix: always close with `detach-all`. Children that belong under the
+    closed tab's parent are then attached to it again with `attach`,
+    positioned where the closed tab was (before its next sibling, or after
+    the subtree in front of it).
+- **Group tabs nested in a sibling's subtree.**
+  - TST opens the group tab with `tabs.create` at the index before the
+    first grouped tab (`background/tabs-open.js`). When the preceding tab
+    ends another sibling's subtree, TST attaches the new group tab inside
+    that subtree.
+  - The correction attached it to the right parent without a position, so
+    TST also moved it, re-deriving its parent from the new position, and
+    the correction did not stick.
+  - Fix: attach in place (`insertAfter` the tab in front of the group tab).
+    If it still does not stick, the response carries
+    `intendedParentTabId`, and the tool result says where the group tab
+    belongs.

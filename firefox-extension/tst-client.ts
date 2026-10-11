@@ -39,6 +39,12 @@ export interface TstTreeItem {
   [key: string]: unknown;
 }
 
+/** Where TST places a tab: before or after the given tab. */
+export interface TstInsertPosition {
+  insertBefore?: number;
+  insertAfter?: number;
+}
+
 export type TstRemoveMethod =
   | "promote-all"
   | "promote-first"
@@ -184,16 +190,19 @@ export class TstClient {
   /**
    * Attach the given tab as a child tab of the parent tab, re-parenting
    * it from its current parent if it has one. Both tabs must be in the
-   * same window.
+   * same window. Without a position, TST moves the tab to where the
+   * user's settings place new child tabs.
    */
   public async attachTabToParent(
     tabId: number,
-    parentTabId: number
+    parentTabId: number,
+    position: TstInsertPosition = {}
   ): Promise<boolean> {
     const result = await this.command({
       type: "attach",
       child: tabId,
       parent: parentTabId,
+      ...position,
     });
     return result === true;
   }

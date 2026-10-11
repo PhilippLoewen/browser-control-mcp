@@ -135,6 +135,14 @@ export function formatGroupResult(
   let text =
     `Created tab group "${groupTitle}" (group tab id ${group.groupId}) with ` +
     `${group.memberTabIds.length} of ${tabIds.length} tabs, ${position}`;
+  if (group.intendedParentTabId !== undefined) {
+    text +=
+      group.intendedParentTabId === null
+        ? ". Tree Style Tab kept the group tab there, although it should be at the top level " +
+          "(the grouped tabs shared no parent); moving it did not take effect"
+        : ". Tree Style Tab kept the group tab there, although the grouped tabs shared parent " +
+          `tab ${group.intendedParentTabId}; moving it did not take effect`;
+  }
   if (group.missingTabIds.length > 0) {
     text += `. NOT grouped: ${group.missingTabIds.join(", ")}`;
   }

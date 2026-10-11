@@ -112,6 +112,12 @@ export interface TabGroupCreatedExtensionMessage extends ExtensionMessageBase {
   /** Tree Style Tab integration: the group tab's parent, or null at the top level. */
   parentTabId?: number | null;
   /**
+   * Tree Style Tab integration: set when TST placed the group tab under a
+   * different parent than the one the grouped tabs shared (null: the top
+   * level) and moving it there did not take effect.
+   */
+  intendedParentTabId?: number | null;
+  /**
    * Tree Style Tab integration: whether the tree settled into the expected
    * state (all tabs grouped, group tab placed) before the response was sent.
    */

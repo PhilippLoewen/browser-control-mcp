@@ -2008,7 +2008,7 @@ describe("MessageHandler", () => {
           // Assert
           expect(mockTst.removeTabsKeepingChildren).toHaveBeenCalledWith(
             [123, 456],
-            "promote-all"
+            "detach-all"
           );
           expect(browser.tabs.remove).not.toHaveBeenCalled();
           expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
@@ -2050,11 +2050,15 @@ describe("MessageHandler", () => {
             correlationId: "test-correlation-id",
           });
 
-          // Assert
+          // Assert: TST drops "promote-all" sent through its API (the
+          // method's internal value is 0, which TST treats as "not given")
+          // and falls back to the user's close-parent setting, which
+          // promotes the first child of a root tab. "detach-all" works.
           expect(mockTst.removeTabsKeepingChildren).toHaveBeenCalledWith(
             [10],
-            "promote-all"
+            "detach-all"
           );
+          expect(mockTst.attachTabToParent).not.toHaveBeenCalled();
           expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
             resource: "tabs-closed",
             correlationId: "test-correlation-id",
@@ -2066,8 +2070,78 @@ describe("MessageHandler", () => {
           });
         });
 
-        it("should move the children of a closed nested tab under its parent", async () => {
-          // Arrange: 1 > 10 > (11, 12)
+        it("should move the children of a closed nested tab under its parent, in place", async () => {
+          // Arrange: 1 > (10 > (11, 12), 13). TST detaches 11 and 12 to the
+          // top level; they are then attached to 1 before 13, where 10 was.
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([
+            { id: 1, windowId: 1 },
+            { id: 10, windowId: 1 },
+          ]);
+          mockTst.getLightTree
+            .mockResolvedValueOnce([
+              {
+                id: 1,
+                children: [
+                  {
+                    id: 10,
+                    children: [
+                      { id: 11, children: [] },
+                      { id: 12, children: [] },
+                    ],
+                  },
+                  { id: 13, children: [] },
+                ],
+              },
+            ])
+            .mockResolvedValueOnce([
+              { id: 1, children: [{ id: 13, children: [] }] },
+              { id: 11, children: [] },
+              { id: 12, children: [] },
+            ])
+            .mockResolvedValue([
+              {
+                id: 1,
+                children: [
+                  { id: 11, children: [] },
+                  { id: 12, children: [] },
+                  { id: 13, children: [] },
+                ],
+              },
+            ]);
+
+          // Act
+          await tstHandler.handleDecodedMessage({
+            cmd: "close-tabs",
+            tabIds: [10],
+            keepChildren: true,
+            correlationId: "test-correlation-id",
+          });
+
+          // Assert
+          expect(mockTst.removeTabsKeepingChildren).toHaveBeenCalledWith(
+            [10],
+            "detach-all"
+          );
+          expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(1, 11, 1, {
+            insertBefore: 13,
+          });
+          expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(2, 12, 1, {
+            insertBefore: 13,
+          });
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs-closed",
+            correlationId: "test-correlation-id",
+            reparented: [
+              { tabId: 11, parentTabId: 1 },
+              { tabId: 12, parentTabId: 1 },
+            ],
+            verified: true,
+          });
+        });
+
+        it("should move the children of a closed last child under its parent", async () => {
+          // Arrange: 1 > 10 > (11, 12), with nothing after 10 under 1.
           mockTst.isAvailable.mockReturnValue(true);
           (browser.tabs.query as jest.Mock).mockResolvedValue([
             { id: 1, windowId: 1 },
@@ -2088,6 +2162,11 @@ describe("MessageHandler", () => {
                 ],
               },
             ])
+            .mockResolvedValueOnce([
+              { id: 1, children: [] },
+              { id: 11, children: [] },
+              { id: 12, children: [] },
+            ])
             .mockResolvedValue([
               {
                 id: 1,
@@ -2106,7 +2185,13 @@ describe("MessageHandler", () => {
             correlationId: "test-correlation-id",
           });
 
-          // Assert
+          // Assert: placed where 10 was, each child after the previous one.
+          expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(1, 11, 1, {
+            insertAfter: 1,
+          });
+          expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(2, 12, 1, {
+            insertAfter: 11,
+          });
           expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
             resource: "tabs-closed",
             correlationId: "test-correlation-id",
@@ -2151,6 +2236,7 @@ describe("MessageHandler", () => {
             [10],
             "detach-all"
           );
+          expect(mockTst.attachTabToParent).not.toHaveBeenCalled();
           expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
             resource: "tabs-closed",
             correlationId: "test-correlation-id",
@@ -2899,6 +2985,127 @@ describe("MessageHandler", () => {
           expect(mockClient.sendResourceToServer).toHaveBeenCalledWith(
             expect.objectContaining({ parentTabId: 50, verified: true })
           );
+        });
+
+        // 124 > (141 > 127, 200): TST opens the group tab for 200 right
+        // after 127, the end of 141's subtree, and attaches it to 141.
+        function mockGroupNestedAfterSiblingSubtree(): void {
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.createGroup.mockResolvedValue(789);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([
+            { id: 200, windowId: 1 },
+          ]);
+          mockTst.getLightTree
+            .mockResolvedValueOnce([
+              {
+                id: 124,
+                children: [
+                  { id: 141, children: [{ id: 127, children: [] }] },
+                  { id: 200, children: [] },
+                ],
+              },
+            ])
+            .mockResolvedValueOnce([
+              {
+                id: 124,
+                children: [
+                  {
+                    id: 141,
+                    children: [
+                      { id: 127, children: [] },
+                      { id: 789, children: [{ id: 200, children: [] }] },
+                    ],
+                  },
+                ],
+              },
+            ]);
+        }
+
+        it("should move a group tab TST nested in a sibling's subtree under the shared parent, in place", async () => {
+          // Arrange
+          mockGroupNestedAfterSiblingSubtree();
+          mockTst.getLightTree.mockResolvedValue([
+            {
+              id: 124,
+              children: [
+                { id: 141, children: [{ id: 127, children: [] }] },
+                { id: 789, children: [{ id: 200, children: [] }] },
+              ],
+            },
+          ]);
+
+          // Act
+          await tstHandler.handleDecodedMessage({
+            cmd: "group-tabs",
+            tabIds: [200],
+            isCollapsed: false,
+            groupColor: "grey",
+            groupTitle: "My group",
+            correlationId: "test-correlation-id",
+          });
+
+          // Assert: attached without moving, right after 127, so TST does
+          // not re-derive the parent from a new position.
+          expect(mockTst.attachTabToParent).toHaveBeenCalledWith(789, 124, {
+            insertAfter: 127,
+          });
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "new-tab-group",
+            correlationId: "test-correlation-id",
+            groupId: 789,
+            memberTabIds: [200],
+            missingTabIds: [],
+            parentTabId: 124,
+            verified: true,
+          });
+        });
+
+        it("should report the intended parent when TST keeps the group tab in the wrong place", async () => {
+          jest.useFakeTimers();
+          try {
+            // Arrange: the group tab stays under 141 despite the attach.
+            mockGroupNestedAfterSiblingSubtree();
+            mockTst.getLightTree.mockResolvedValue([
+              {
+                id: 124,
+                children: [
+                  {
+                    id: 141,
+                    children: [
+                      { id: 127, children: [] },
+                      { id: 789, children: [{ id: 200, children: [] }] },
+                    ],
+                  },
+                ],
+              },
+            ]);
+
+            // Act
+            const grouping = tstHandler.handleDecodedMessage({
+              cmd: "group-tabs",
+              tabIds: [200],
+              isCollapsed: false,
+              groupColor: "grey",
+              groupTitle: "My group",
+              correlationId: "test-correlation-id",
+            });
+            await jest.advanceTimersByTimeAsync(5_000);
+            await grouping;
+
+            // Assert
+            expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+              resource: "new-tab-group",
+              correlationId: "test-correlation-id",
+              groupId: 789,
+              memberTabIds: [200],
+              missingTabIds: [],
+              parentTabId: 141,
+              intendedParentTabId: 124,
+              verified: false,
+            });
+          } finally {
+            jest.useRealTimers();
+          }
         });
 
         it("should judge the group's place by the top tabs of the selection only", async () => {

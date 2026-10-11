@@ -3,7 +3,7 @@ import type { BrowserTab } from "@browser-control-mcp/common/extension-messages"
 import { WebsocketClient } from "./client";
 import { isCommandAllowed, isDomainInDenyList, COMMAND_TO_TOOL_ID, addAuditLogEntry } from "./extension-config";
 import { hasCaptureConsent, markTabAsAwaitingConsent } from "./capture-consent";
-import type { TstClient, TstTreeItem } from "./tst-client";
+import type { TstClient, TstInsertPosition, TstTreeItem } from "./tst-client";
 import { WriteLock } from "./write-lock";
 
 // Time to let a newly foregrounded tab paint before capturing it
@@ -48,6 +48,52 @@ interface TreeNode {
   /** Undefined for a tab at the top level. */
   parentTabId?: number;
   childIds: number[];
+}
+
+/** The last tab in the subtree of the given tab (the tab itself without children). */
+function lastDescendant(tree: Map<number, TreeNode>, tabId: number): number {
+  let last = tabId;
+  let childIds = tree.get(last)?.childIds ?? [];
+  while (childIds.length > 0) {
+    last = childIds[childIds.length - 1];
+    childIds = tree.get(last)?.childIds ?? [];
+  }
+  return last;
+}
+
+/**
+ * Where to attach the kept children of a closed tab to the closed tab's
+ * parent so they take its place: before the closed tab's next sibling
+ * that stays open, or else each after the subtree in front of it.
+ */
+function positionsInPlaceOf(
+  before: Map<number, TreeNode>,
+  closedTabId: number,
+  keptChildren: number[],
+  closed: Set<number>
+): TstInsertPosition[] {
+  const parentId = before.get(closedTabId)!.parentTabId!;
+  const siblings = before.get(parentId)?.childIds ?? [];
+  const index = siblings.indexOf(closedTabId);
+  const nextSibling = siblings
+    .slice(index + 1)
+    .find((siblingId) => !closed.has(siblingId));
+  if (nextSibling !== undefined) {
+    return keptChildren.map(() => ({ insertBefore: nextSibling }));
+  }
+  const previousSibling = siblings
+    .slice(0, Math.max(index, 0))
+    .reverse()
+    .find((siblingId) => !closed.has(siblingId));
+  let anchor =
+    previousSibling !== undefined
+      ? lastDescendant(before, previousSibling)
+      : parentId;
+  return keptChildren.map((childId) => {
+    const position = { insertAfter: anchor };
+    anchor = lastDescendant(before, childId);
+    return position;
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -283,9 +329,13 @@ export class MessageHandler {
    *
    * TST's default ("promote-intelligently") makes the first child of a
    * closed root tab the new parent of its siblings, so closing a group tab
-   * would build a deep subtree under one of its former members. Instead,
-   * "promote-all" moves the children to the closed tab's parent (the top
-   * level for a root tab), and "detach-all" always to the top level.
+   * would build a deep subtree under one of its former members. TST's
+   * "promote-all" would avoid that, but TST drops it when it comes through
+   * the API (its internal value is 0, which TST treats as "no method
+   * given") and falls back to the user's close-parent setting. So the tabs
+   * are always closed with "detach-all", which moves the children to the
+   * top level, and children that belong under the closed tab's parent are
+   * then attached to it again, in the closed tab's place.
    *
    * TST acknowledges the command before it has re-parented the children,
    * so the tree is read back until it shows the expected placement. If it
@@ -300,10 +350,7 @@ export class MessageHandler {
     const tst = this.tst!;
     const before = await this.readTree(await this.windowIdsOf(tabIds));
 
-    const kept = await tst.removeTabsKeepingChildren(
-      tabIds,
-      childPlacement === "top-level" ? "detach-all" : "promote-all"
-    );
+    const kept = await tst.removeTabsKeepingChildren(tabIds, "detach-all");
     if (!kept) {
       // Do not fall back to tabs.remove: it would close the hidden children
       // of collapsed trees, the opposite of what was asked.
@@ -324,24 +371,44 @@ export class MessageHandler {
     }
 
     // The parent each kept child is expected to end up under (undefined:
-    // top level). A closed tab inside another closed tab passes its
-    // children on to the nearest ancestor that stays open.
+    // top level), and where to attach it to that parent. A closed tab
+    // inside another closed tab passes its children on to the nearest
+    // ancestor that stays open.
     const closed = new Set(tabIds);
     const expectedParents = new Map<number, number | undefined>();
+    const reattachments: {
+      childId: number;
+      parentId: number;
+      position: TstInsertPosition;
+    }[] = [];
     const windowIds = new Set<number>();
     for (const tabId of tabIds) {
-      let newParent = before.get(tabId)?.parentTabId;
+      const directParent = before.get(tabId)?.parentTabId;
+      let newParent = directParent;
       while (newParent !== undefined && closed.has(newParent)) {
         newParent = before.get(newParent)?.parentTabId;
       }
-      for (const childId of before.get(tabId)?.childIds ?? []) {
-        if (closed.has(childId)) continue;
-        expectedParents.set(
-          childId,
-          childPlacement === "top-level" ? undefined : newParent
-        );
-        windowIds.add(before.get(childId)!.windowId);
+      if (childPlacement === "top-level") {
+        newParent = undefined;
       }
+      const keptChildren = (before.get(tabId)?.childIds ?? []).filter(
+        (childId) => !closed.has(childId)
+      );
+      const positions =
+        newParent !== undefined && newParent === directParent
+          ? positionsInPlaceOf(before, tabId, keptChildren, closed)
+          : keptChildren.map(() => ({}));
+      keptChildren.forEach((childId, index) => {
+        expectedParents.set(childId, newParent);
+        windowIds.add(before.get(childId)!.windowId);
+        if (newParent !== undefined) {
+          reattachments.push({
+            childId,
+            parentId: newParent,
+            position: positions[index],
+          });
+        }
+      });
     }
 
     if (expectedParents.size === 0) {
@@ -352,6 +419,26 @@ export class MessageHandler {
         verified: true,
       });
       return;
+    }
+
+    if (reattachments.length > 0) {
+      // Let TST finish detaching the children first; attaching them before
+      // it processes the close would be undone by the detach.
+      await this.waitForTree(
+        windowIds,
+        (tree) =>
+          tabIds.every((tabId) => !tree.has(tabId)) &&
+          reattachments.every(
+            ({ childId }) => tree.get(childId)?.parentTabId === undefined
+          )
+      );
+      for (const { childId, parentId, position } of reattachments) {
+        if (!(await tst.attachTabToParent(childId, parentId, position))) {
+          console.error(
+            `Failed to attach kept child tab ${childId} to tab ${parentId}`
+          );
+        }
+      }
     }
 
     // The kept children are in the windows of the closed tabs, so the
@@ -1507,6 +1594,8 @@ export class MessageHandler {
     const grouping = await this.waitForTree(windowIds, allGrouped);
     let tree = grouping.tree;
     let verified = grouping.settled;
+    // Set when the group tab could not be moved to where it belongs.
+    let intendedParentTabId: number | null | undefined;
 
     if (before && tree?.has(groupId)) {
       // Only the top tabs of the selection (whose parent is not grouped
@@ -1520,10 +1609,21 @@ export class MessageHandler {
       const expectedParent =
         originalParents.size === 1 ? [...originalParents][0] : undefined;
       if (tree.get(groupId)!.parentTabId !== expectedParent) {
+        // Attach in place (after the tab in front of the group tab): moving
+        // the tab would let TST re-derive its parent from the new position.
+        const groupWindow = tree.get(groupId)!.windowId;
+        const windowOrder = [...tree]
+          .filter(([, node]) => node.windowId === groupWindow)
+          .map(([tabId]) => tabId);
+        const previousTab = windowOrder[windowOrder.indexOf(groupId) - 1];
         const moved =
           expectedParent === undefined
             ? await tst.detachTab(groupId)
-            : await tst.attachTabToParent(groupId, expectedParent);
+            : await tst.attachTabToParent(
+                groupId,
+                expectedParent,
+                previousTab !== undefined ? { insertAfter: previousTab } : {}
+              );
         if (!moved) {
           console.error(
             `Failed to move group tab ${groupId} out of the tree TST created it in`
@@ -1537,6 +1637,9 @@ export class MessageHandler {
         );
         tree = placing.tree;
         verified = verified && placing.settled;
+        if (tree?.get(groupId)?.parentTabId !== expectedParent) {
+          intendedParentTabId = expectedParent ?? null;
+        }
       }
     }
 
@@ -1557,6 +1660,7 @@ export class MessageHandler {
             parentTabId: tree.get(groupId)?.parentTabId ?? null,
           }
         : {}),
+      ...(intendedParentTabId !== undefined ? { intendedParentTabId } : {}),
       verified,
     });
   }

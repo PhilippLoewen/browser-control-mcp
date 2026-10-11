@@ -302,6 +302,32 @@ describe("TstClient", () => {
       });
     });
 
+    it("attachTabToParent passes the insertion position", async () => {
+      sendMessage
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce({ grantedPermissions: [] })
+        .mockImplementationOnce(() => new Promise(() => {}))
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+      await client.init();
+
+      expect(await client.attachTabToParent(3, 1, { insertBefore: 4 })).toBe(true);
+      expect(sendMessage).toHaveBeenLastCalledWith(TST_ADDON_ID, {
+        type: "attach",
+        child: 3,
+        parent: 1,
+        insertBefore: 4,
+      });
+
+      expect(await client.attachTabToParent(3, 1, { insertAfter: 2 })).toBe(true);
+      expect(sendMessage).toHaveBeenLastCalledWith(TST_ADDON_ID, {
+        type: "attach",
+        child: 3,
+        parent: 1,
+        insertAfter: 2,
+      });
+    });
+
     it("detachTab sends the detach command", async () => {
       sendMessage
         .mockResolvedValueOnce(true)
