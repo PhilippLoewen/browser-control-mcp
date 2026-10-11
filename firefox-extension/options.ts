@@ -16,7 +16,7 @@ import {
   getTstIntegrationMode,
   setTstIntegrationMode,
 } from "./extension-config";
-import { TST_ADDON_ID } from "./tst-client";
+import { TST_ADDON_ID, TST_REQUEST_TIMEOUT_MS } from "./tst-client";
 
 const secretDisplay = document.getElementById(
   "secret-display"
@@ -368,16 +368,27 @@ async function saveTstIntegrationMode(event: MouseEvent) {
  * installed and enabled
  */
 async function getTstVersion(): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Timed out")),
+      TST_REQUEST_TIMEOUT_MS
+    );
+  });
   try {
     const result = await Promise.race([
       browser.runtime.sendMessage(TST_ADDON_ID, { type: "get-version" }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Timed out")), 3000)
-      ),
+      timeout,
     ]);
     return typeof result === "string" ? result : null;
   } catch {
     return null;
+  } finally {
+    // Clear the timer so it does not outlive the race and reject an
+    // already-settled promise after a fast response.
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 }
 

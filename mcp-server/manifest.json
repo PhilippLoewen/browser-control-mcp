@@ -69,7 +69,7 @@
         },
         {
             "name": "get-tab-web-content",
-            "description": "Get the full text content of the webpage and the list of links in the webpage (requires user consent)"
+            "description": "Get the full text content of the webpage and the list of links in the webpage (requires user consent); discarded (unloaded) tabs are reloaded first"
         },
         {
             "name": "reorder-browser-tabs",
@@ -86,6 +86,10 @@
         {
             "name": "capture-tab-screenshot",
             "description": "Capture a screenshot of the visible area of a browser tab (requires per-tab user consent)"
+        },
+        {
+            "name": "load-browser-tab",
+            "description": "Load (restore) a discarded (unloaded) browser tab by reloading it"
         }
     ]
 }

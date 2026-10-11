@@ -48,6 +48,22 @@ interface MockTstClient {
   attachTabToParent: jest.Mock;
 }
 
+/**
+ * Mock browser.tabs.reload so that the most recently registered
+ * onUpdated listener is immediately notified of a load "complete",
+ * the way a reloaded discarded tab reports it.
+ */
+function mockReloadCompletingLoad(tabId: number): void {
+  (browser.tabs.reload as jest.Mock).mockImplementation(() => {
+    const listeners = (
+      browser.tabs.onUpdated.addListener as jest.Mock
+    ).mock.calls;
+    const listener = listeners[listeners.length - 1][0];
+    listener(tabId, { status: "complete" });
+    return Promise.resolve();
+  });
+}
+
 describe("MessageHandler", () => {
   let messageHandler: MessageHandler;
   let mockClient: jest.Mocked<WebsocketClient>;
@@ -288,7 +304,11 @@ describe("MessageHandler", () => {
           correlationId: "test-correlation-id",
         };
 
-        const mockTabs = [{ id: 123, url: "https://example.com" }];
+        // A discarded (unloaded) tab is listed like any other; the flag
+        // flows through to the server untouched.
+        const mockTabs = [
+          { id: 123, url: "https://example.com", discarded: true },
+        ];
         (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
 
         // Act
@@ -432,6 +452,54 @@ describe("MessageHandler", () => {
           links: [{ url: "https://example.com/page", text: "Page" }],
           totalLength: 12,
         });
+        expect(browser.tabs.reload).not.toHaveBeenCalled();
+      });
+
+      it("should reload a discarded tab before fetching its content and report it", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(true);
+
+        const mockScriptResult = [
+          {
+            links: [{ url: "https://example.com/page", text: "Page" }],
+            fullText: "Page content",
+            isTruncated: false,
+            totalLength: 12,
+          },
+        ];
+        (browser.tabs.executeScript as jest.Mock).mockResolvedValue(
+          mockScriptResult
+        );
+        mockReloadCompletingLoad(123);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(browser.tabs.executeScript).toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+          isTruncated: false,
+          fullText: "Page content",
+          links: [{ url: "https://example.com/page", text: "Page" }],
+          totalLength: 12,
+          loaded: true,
+        });
       });
 
       it("should throw an error if tab URL domain is in deny list", async () => {
@@ -488,6 +556,86 @@ describe("MessageHandler", () => {
           messageHandler.handleDecodedMessage(request)
         ).rejects.toThrow();
         expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("load-tab command", () => {
+      it("should reload a discarded tab and confirm once it has loaded", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        mockReloadCompletingLoad(123);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-loaded",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+        });
+      });
+
+      it("should not reload a tab that is already loaded", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = { id: 123, url: "https://example.com" };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert
+        expect(browser.tabs.reload).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "tab-loaded",
+          correlationId: "test-correlation-id",
+          tabId: 123,
+        });
+      });
+
+      it("should throw an error if the tab does not exist", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "load-tab",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.tabs.get as jest.Mock).mockRejectedValue(
+          new Error("No such tab")
+        );
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("No such tab");
+        expect(browser.tabs.reload).not.toHaveBeenCalled();
+
+        // Mock implementations persist across tests in this suite
+        // (clearAllMocks only clears calls), so restore a resolved default
+        // for the tests that follow.
+        (browser.tabs.get as jest.Mock).mockResolvedValue({
+          id: 123,
+          url: "https://example.com",
+        });
       });
     });
 
@@ -562,7 +710,17 @@ describe("MessageHandler", () => {
         };
 
         (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
-        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 900 }]);
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([
+              { id: 123, windowId: 1, index: 0 },
+              { id: 456, windowId: 1, index: 1 },
+            ]);
+          }
+        );
         (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
         (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
 
@@ -572,6 +730,9 @@ describe("MessageHandler", () => {
         // Assert
         expect(browser.windows.create).toHaveBeenCalledWith({});
         expect(browser.tabs.query).toHaveBeenCalledWith({ windowId: 7 });
+        // The original position of the requested tabs is snapshotted
+        // with a single query for all tabs before the moves.
+        expect(browser.tabs.query).toHaveBeenCalledWith({});
         expect(browser.tabs.move).toHaveBeenCalledTimes(2);
         expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
           windowId: 7,
@@ -581,6 +742,8 @@ describe("MessageHandler", () => {
           windowId: 7,
           index: -1,
         });
+        // No placeholder: window 1 still holds a second tab.
+        expect(browser.tabs.create).not.toHaveBeenCalled();
         expect(browser.tabs.remove).toHaveBeenCalledWith(900);
         expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
           resource: "window-created",
@@ -643,17 +806,91 @@ describe("MessageHandler", () => {
         };
 
         (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
-        (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 900 }]);
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([
+              { id: 123, windowId: 1, index: 0 },
+              { id: 456, windowId: 1, index: 1 },
+            ]);
+          }
+        );
+        // The first tab is moved into the new window; the second move
+        // fails (e.g. a stale tab ID).
         (browser.tabs.move as jest.Mock)
           .mockResolvedValueOnce(undefined)
-          .mockRejectedValueOnce(new Error("Tab not found"));
+          .mockRejectedValueOnce(new Error("Tab not found"))
+          .mockResolvedValueOnce(undefined);
         (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
 
         // Act & Assert
         await expect(
           messageHandler.handleDecodedMessage(request)
         ).rejects.toThrow("Tab not found");
+        // The first move, the failed second move, and the move of the
+        // first tab back to its original window and index.
+        expect(browser.tabs.move).toHaveBeenCalledTimes(3);
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
+          windowId: 7,
+          index: -1,
+        });
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(2, 456, {
+          windowId: 7,
+          index: -1,
+        });
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(3, 123, {
+          windowId: 1,
+          index: 0,
+        });
         expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should keep the new window open and rethrow with the window ID if moving a tab back fails", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123, 456],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([
+              { id: 123, windowId: 1, index: 0 },
+              { id: 456, windowId: 1, index: 1 },
+            ]);
+          }
+        );
+        // The first tab is moved into the new window, the second move
+        // fails, and moving the first tab back fails as well (its
+        // original window is gone).
+        (browser.tabs.move as jest.Mock)
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error("Tab not found"))
+          .mockRejectedValueOnce(new Error("Original window not found"));
+        (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act & Assert
+        const result = messageHandler.handleDecodedMessage(request);
+        // The rethrown error carries the original failure and the new
+        // window ID so the caller knows where the tabs are.
+        await expect(result).rejects.toThrow("Tab not found");
+        await expect(result).rejects.toThrow("new window 7");
+        // The already-moved tab is restored best effort.
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(3, 123, {
+          windowId: 1,
+          index: 0,
+        });
+        // The window must not be closed: it still holds the tab that
+        // could not be moved back.
+        expect(browser.windows.remove).not.toHaveBeenCalled();
         expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
       });
 
@@ -708,6 +945,144 @@ describe("MessageHandler", () => {
           windowId: 7,
           tabIds: [123],
         });
+      });
+
+      it("should keep a source window open via a placeholder when it holds only the moved tab and close the placeholder afterwards", async () => {
+        // Arrange: window 1 holds only tab 123. Moving 123 out would
+        // leave the window without tabs, and Firefox would close it.
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([{ id: 123, windowId: 1, index: 0 }]);
+          }
+        );
+        (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 901 });
+        (browser.tabs.move as jest.Mock).mockResolvedValue(undefined);
+        (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act
+        await messageHandler.handleDecodedMessage(request);
+
+        // Assert: a placeholder is opened in the source window before
+        // the move and closed again afterwards.
+        expect(browser.tabs.create).toHaveBeenCalledWith({
+          windowId: 1,
+          url: "about:blank",
+        });
+        expect(browser.tabs.move).toHaveBeenCalledTimes(1);
+        expect(browser.tabs.move).toHaveBeenCalledWith(123, {
+          windowId: 7,
+          index: -1,
+        });
+        // The new window's default tab and the placeholder are removed.
+        expect(browser.tabs.remove).toHaveBeenCalledWith(900);
+        expect(browser.tabs.remove).toHaveBeenCalledWith(901);
+        expect(browser.windows.remove).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+          resource: "window-created",
+          correlationId: "test-correlation-id",
+          windowId: 7,
+          tabIds: [123],
+        });
+      });
+
+      it("should restore a tab to its source window that would otherwise close itself when a later move fails", async () => {
+        // Arrange: window 1 holds only tab 123, so a placeholder keeps
+        // it open while 123 is moved out. The second tab (a stale ID)
+        // fails the move; the rollback must still be able to move 123
+        // back to window 1.
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123, 999999999],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([{ id: 123, windowId: 1, index: 0 }]);
+          }
+        );
+        (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 901 });
+        (browser.tabs.move as jest.Mock)
+          .mockResolvedValueOnce(undefined) // 123 into the new window
+          .mockRejectedValueOnce(new Error("Invalid tab ID: 999999999"))
+          .mockResolvedValueOnce(undefined); // 123 back to window 1
+        (browser.tabs.remove as jest.Mock).mockResolvedValue(undefined);
+        (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Invalid tab ID: 999999999");
+        expect(browser.tabs.create).toHaveBeenCalledWith({
+          windowId: 1,
+          url: "about:blank",
+        });
+        expect(browser.tabs.move).toHaveBeenCalledTimes(3);
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(1, 123, {
+          windowId: 7,
+          index: -1,
+        });
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(2, 999999999, {
+          windowId: 7,
+          index: -1,
+        });
+        // The rollback moves 123 back to window 1 — possible because the
+        // placeholder kept the window open.
+        expect(browser.tabs.move).toHaveBeenNthCalledWith(3, 123, {
+          windowId: 1,
+          index: 0,
+        });
+        // The placeholder is closed and the new window is removed.
+        expect(browser.tabs.remove).toHaveBeenCalledWith(901);
+        expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should close the new window and rethrow if opening a placeholder fails", async () => {
+        // Arrange: window 1 holds only tab 123, so a placeholder would
+        // be needed; opening it fails. Nothing must be moved and the
+        // new window must be cleaned up.
+        const request: ServerMessageRequest = {
+          cmd: "create-window",
+          tabIds: [123],
+          correlationId: "test-correlation-id",
+        };
+
+        (browser.windows.create as jest.Mock).mockResolvedValue({ id: 7 });
+        (browser.tabs.query as jest.Mock).mockImplementation(
+          (query: { windowId?: number }) => {
+            if (query.windowId === 7) {
+              return Promise.resolve([{ id: 900 }]);
+            }
+            return Promise.resolve([{ id: 123, windowId: 1, index: 0 }]);
+          }
+        );
+        (browser.tabs.create as jest.Mock).mockRejectedValue(
+          new Error("Cannot open tab")
+        );
+        (browser.windows.remove as jest.Mock).mockResolvedValue(undefined);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Cannot open tab");
+        expect(browser.tabs.move).not.toHaveBeenCalled();
+        expect(browser.windows.remove).toHaveBeenCalledWith(7);
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
       });
     });
 
@@ -775,14 +1150,27 @@ describe("MessageHandler", () => {
         expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
       });
 
-      it("should reject when Tree Style Tab refuses the attach", async () => {
+      it("should restore the attached tabs to their original parent when a later attach is refused", async () => {
         // Arrange
         mockTst.isAvailable.mockReturnValue(true);
-        // The first tab attaches fine, the second is refused (e.g. because
-        // it is in a different window).
+        // Both tabs are currently children of tab 100.
+        (browser.tabs.query as jest.Mock).mockResolvedValue([
+          { id: 123, windowId: 1 },
+          { id: 456, windowId: 1 },
+          { id: 789, windowId: 1 },
+          { id: 100, windowId: 1 },
+        ]);
+        mockTst.getLightTree.mockResolvedValue([
+          { id: 789, children: [] },
+          { id: 100, children: [{ id: 123 }, { id: 456 }] },
+        ]);
+        // The first tab attaches, the second is refused (e.g. because it
+        // is in a different window), and the restore of the first tab to
+        // its original parent succeeds.
         mockTst.attachTabToParent
-          .mockResolvedValueOnce(true)
-          .mockResolvedValueOnce(false);
+          .mockResolvedValueOnce(true) // 123 -> 789
+          .mockResolvedValueOnce(false) // 456 -> 789
+          .mockResolvedValueOnce(true); // 123 -> 100 (restore)
 
         const request: ServerMessageRequest = {
           cmd: "attach-tabs-to-parent",
@@ -797,7 +1185,50 @@ describe("MessageHandler", () => {
         ).rejects.toThrow(
           "Failed to attach tab 456 to tab 789 via Tree Style Tab"
         );
-        expect(mockTst.attachTabToParent).toHaveBeenCalledTimes(2);
+        expect(mockTst.attachTabToParent).toHaveBeenCalledTimes(3);
+        expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(1, 123, 789);
+        expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(2, 456, 789);
+        expect(mockTst.attachTabToParent).toHaveBeenNthCalledWith(3, 123, 100);
+        expect(mockTst.moveTabToStart).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should report a partially re-parented tree when the restore fails", async () => {
+        // Arrange
+        mockTst.isAvailable.mockReturnValue(true);
+        // Both tabs are at the root level of the window, so there is no
+        // original parent to re-attach them to.
+        (browser.tabs.query as jest.Mock).mockResolvedValue([
+          { id: 123, windowId: 1 },
+          { id: 456, windowId: 1 },
+          { id: 789, windowId: 1 },
+        ]);
+        mockTst.getLightTree.mockResolvedValue([
+          { id: 789, children: [] },
+          { id: 123, children: [] },
+          { id: 456, children: [] },
+        ]);
+        mockTst.attachTabToParent
+          .mockResolvedValueOnce(true) // 123 -> 789
+          .mockResolvedValueOnce(false); // 456 -> 789
+        // The restore of tab 123 (root level, so moved to the window
+        // start) also fails.
+        mockTst.moveTabToStart.mockResolvedValue(false);
+
+        const request: ServerMessageRequest = {
+          cmd: "attach-tabs-to-parent",
+          tabIds: [123, 456],
+          parentTabId: 789,
+          correlationId: "test-correlation-id",
+        };
+
+        // Act & Assert
+        await expect(
+          tstHandler.handleDecodedMessage(request)
+        ).rejects.toThrow(
+          "Could not restore the attached tabs after: Failed to attach tab 456 to tab 789 via Tree Style Tab"
+        );
+        expect(mockTst.moveTabToStart).toHaveBeenCalledWith(123);
         expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
       });
     });
@@ -1321,6 +1752,81 @@ describe("MessageHandler", () => {
           });
         });
 
+        it("should carry the discarded flag into the tree list", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          const mockTabs = [
+            {
+              id: 1,
+              windowId: 1,
+              url: "https://a.com",
+              title: "A",
+              lastAccessed: 1000,
+              active: false,
+              discarded: false,
+            },
+            {
+              id: 2,
+              windowId: 1,
+              url: "https://b.com",
+              title: "B",
+              lastAccessed: 2000,
+              active: true,
+              discarded: true,
+            },
+          ];
+          (browser.tabs.query as jest.Mock).mockResolvedValue(mockTabs);
+          mockTst.getLightTree.mockResolvedValue([
+            {
+              id: 1,
+              states: [],
+              children: [{ id: 2, states: [], children: [] }],
+            },
+          ]);
+
+          const request: ServerMessageRequest = {
+            cmd: "get-tab-list",
+            correlationId: "test-correlation-id",
+          };
+
+          // Act
+          await tstHandler.handleDecodedMessage(request);
+
+          // Assert
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "tabs",
+            correlationId: "test-correlation-id",
+            tabs: [
+              {
+                id: 1,
+                url: "https://a.com",
+                title: "A",
+                lastAccessed: 1000,
+                windowId: 1,
+                active: false,
+                discarded: false,
+                depth: 0,
+                parentTabId: undefined,
+                childCount: 1,
+                collapsed: false,
+              },
+              {
+                id: 2,
+                url: "https://b.com",
+                title: "B",
+                lastAccessed: 2000,
+                windowId: 1,
+                active: true,
+                discarded: true,
+                depth: 1,
+                parentTabId: 1,
+                childCount: 0,
+                collapsed: false,
+              },
+            ],
+          });
+        });
+
         it("should fall back to the flat list when a tab is missing from the TST tree", async () => {
           // Arrange
           mockTst.isAvailable.mockReturnValue(true);
@@ -1494,6 +2000,31 @@ describe("MessageHandler", () => {
 
           // Assert
           expect(browser.tabs.move).toHaveBeenCalledTimes(2);
+        });
+
+        it("should not fall back to tabs.move when a TST move fails after an earlier move was applied", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          mockTst.moveTabToStart.mockResolvedValue(true);
+          mockTst.moveTabAfter.mockResolvedValue(false);
+          (browser.tabs.get as jest.Mock).mockImplementation(
+            (tabId: number) => Promise.resolve({ id: tabId, windowId: 1 })
+          );
+
+          const request: ServerMessageRequest = {
+            cmd: "reorder-tabs",
+            tabOrder: [123, 456],
+            correlationId: "test-correlation-id",
+          };
+
+          // Act & Assert
+          await expect(
+            tstHandler.handleDecodedMessage(request)
+          ).rejects.toThrow("failed after 1 of 2 moves were applied");
+          // The tree was partially reordered by TST, so the standard API
+          // fallback would conflict with it and must not run.
+          expect(browser.tabs.move).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
         });
       });
 

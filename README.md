@@ -15,9 +15,10 @@ The MCP server supports the following tools:
 - Create a new browser window, optionally moving given tabs into it
 - Attach tabs as child tabs of another tab (requires Tree Style Tab)
 - Read and search the browser's history
-- Read a webpage's text content and links (requires user consent)
+- Read a webpage's text content and links (requires user consent; discarded (unloaded) tabs are reloaded first)
 - Find and highlight text in a browser tab (requires user consent)
 - Capture a screenshot of a tab's visible area (requires user consent per tab)
+- Load (restore) a discarded (unloaded) tab by reloading it
 
 ## Example use-cases:
 

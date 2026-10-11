@@ -69,6 +69,11 @@ export const AVAILABLE_TOOLS: ToolInfo[] = [
     id: "capture-tab-screenshot",
     name: "Capture Tab Screenshot",
     description: "Allows the MCP server to capture a screenshot of a tab, after you authorize that tab with the toolbar button"
+  },
+  {
+    id: "load-browser-tab",
+    name: "Load Browser Tab",
+    description: "Allows the MCP server to restore a discarded (unloaded) tab by reloading it"
   }
 ];
 
@@ -86,6 +91,7 @@ export const COMMAND_TO_TOOL_ID: Record<ServerMessageRequest["cmd"], string> = {
   "find-highlight": "find-highlight-in-browser-tab",
   "group-tabs": "reorder-browser-tabs",
   "capture-screenshot": "capture-tab-screenshot",
+  "load-tab": "load-browser-tab",
 };
 
 // Storage schema for tool settings

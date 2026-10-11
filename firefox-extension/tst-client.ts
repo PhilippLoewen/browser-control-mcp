@@ -17,7 +17,7 @@
 export const TST_ADDON_ID = "treestyletab@piro.sakura.ne.jp";
 
 // How long to wait for TST to respond to a command message.
-const TST_REQUEST_TIMEOUT_MS = 3000;
+export const TST_REQUEST_TIMEOUT_MS = 3000;
 // How often to retry registration while TST is unavailable.
 const TST_RETRY_INTERVAL_MS = 30_000;
 
@@ -279,9 +279,15 @@ export class TstClient {
     if (this.retryTimer !== null) return;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      void this.tryRegister().finally(() => {
+      void (async () => {
+        // The loop exists to catch TST being installed while the
+        // integration is wanted. Stop it entirely when the setting was
+        // turned off in the meantime; syncWithSetting retries directly
+        // when the integration is re-enabled.
+        if (!(await this.isIntegrationEnabled())) return;
+        await this.tryRegister();
         if (!this.isAvailable()) this.scheduleRetry();
-      });
+      })();
     }, TST_RETRY_INTERVAL_MS);
   }
 
