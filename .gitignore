@@ -54,4 +54,11 @@ dist
 # Web extension dist
 web-ext-artifacts/
 
+# Local self-signing (personal AMO GUID + staged copy)
+firefox-extension/.self-sign.json
+firefox-extension/.sign-staging/
+
+# Local issue tracker (personal, not shared)
+.scratch/
+
 .DS_Store
