@@ -4,6 +4,7 @@ import test from "node:test";
 import tabFormat from "../dist/tab-format.js";
 
 const {
+  formatOpenResult,
   formatCloseResult,
   formatGroupResult,
   formatTabListJson,
@@ -153,6 +154,37 @@ test("a native tab group keeps the plain confirmation", () => {
 
   assert.equal(result.isError, false);
   assert.equal(result.text, 'Created tab group "Docs" with 2 tabs (group ID: 9)');
+});
+
+test("opening a tab without a parent is a plain confirmation", () => {
+  assert.equal(
+    formatOpenResult("https://a.com", { tabId: 5 }),
+    "https://a.com opened in tab id 5"
+  );
+});
+
+test("opening a child tab reports its parent once TST attached it", () => {
+  assert.equal(
+    formatOpenResult("https://a.com", { tabId: 5, parentTabId: 9, verified: true }),
+    "https://a.com opened in tab id 5, under tab 9"
+  );
+});
+
+test("opening a child tab says where it is when TST had not attached it yet", () => {
+  const text = formatOpenResult("https://a.com", {
+    tabId: 5,
+    parentTabId: null,
+    verified: false,
+  });
+
+  assert.match(text, /^https:\/\/a\.com opened in tab id 5, at the top level/);
+  assert.match(text, /had not attached it to the requested parent/);
+});
+
+test("opening a child tab whose tree could not be read says so", () => {
+  const text = formatOpenResult("https://a.com", { tabId: 5, verified: false });
+
+  assert.match(text, /could not be verified/);
 });
 
 test("closing tabs reports where the kept child tabs ended up", () => {

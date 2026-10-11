@@ -5,6 +5,7 @@ import { BrowserAPI } from "./browser-api";
 import {
   formatCloseResult,
   formatGroupResult,
+  formatOpenResult,
   formatTabListJson,
   formatTabListText,
 } from "./tab-format";
@@ -20,7 +21,7 @@ const mcpServer = new McpServer({
 
 mcpServer.tool(
   "open-browser-tab",
-  "Open a new tab in the user's browser (useful when the user asks to open a website). The url must be a full https:// URL — other schemes (http://, about:blank, file://) are rejected by the browser. When Tree Style Tab is installed and enabled, the new tab becomes a child of the active tab, or of the tab given as parentTabId if provided, and opens in that tab's window.",
+  "Open a new tab in the user's browser (useful when the user asks to open a website). The url must be a full https:// URL — other schemes (http://, about:blank, file://) are rejected by the browser. When Tree Style Tab is installed and enabled, the new tab becomes a child of the active tab, or of the tab given as parentTabId if provided, and opens in that tab's window. The result then names the parent the tab was attached to, read back from the tab tree.",
   {
     url: z.string(),
     parentTabId: z
@@ -29,15 +30,10 @@ mcpServer.tool(
       .describe("Open the tab as a child of this tab (Tree Style Tab only; defaults to the active tab)"),
   },
   async ({ url, parentTabId }) => {
-    const openedTabId = await browserApi.openTab(url, parentTabId);
-    if (openedTabId !== undefined) {
+    const opened = await browserApi.openTabWithPlacement(url, parentTabId);
+    if (opened.tabId !== undefined) {
       return {
-        content: [
-          {
-            type: "text",
-            text: `${url} opened in tab id ${openedTabId}`,
-          },
-        ],
+        content: [{ type: "text", text: formatOpenResult(url, opened) }],
       };
     } else {
       return {

@@ -1,5 +1,6 @@
 import type {
   BrowserTab,
+  OpenedTabIdExtensionMessage,
   TabGroupCreatedExtensionMessage,
   TabsClosedExtensionMessage,
 } from "@browser-control-mcp/common";
@@ -150,6 +151,32 @@ export function formatGroupResult(
     text += `. ${NOT_SETTLED_NOTE}`;
   }
   return { text, isError: group.missingTabIds.length > 0 };
+}
+
+/**
+ * The result of opening a tab. With Tree Style Tab, a child tab's parent
+ * is read back from the tree, so the result says where the tab actually is.
+ */
+export function formatOpenResult(
+  url: string,
+  opened: Omit<OpenedTabIdExtensionMessage, "resource" | "correlationId">
+): string {
+  const text = `${url} opened in tab id ${opened.tabId}`;
+  if (opened.verified === undefined) {
+    return text;
+  }
+  if (opened.parentTabId === undefined) {
+    return `${text}; its place in the tab tree could not be verified because the tree could not be read`;
+  }
+  const position =
+    opened.parentTabId === null ? "at the top level" : `under tab ${opened.parentTabId}`;
+  if (opened.verified) {
+    return `${text}, ${position}`;
+  }
+  return (
+    `${text}, ${position}: Tree Style Tab had not attached it to the requested parent ` +
+    "when this was checked; verify with get-list-of-open-tabs"
+  );
 }
 
 /**

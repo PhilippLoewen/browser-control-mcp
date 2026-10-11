@@ -6,6 +6,7 @@ import type {
   ChildPlacement,
   ExtensionMessage,
   BrowserTab,
+  OpenedTabIdExtensionMessage,
   BrowserHistoryItem,
   ServerMessage,
   TabContentExtensionMessage,
@@ -311,12 +312,22 @@ export class BrowserAPI {
   }
 
   async openTab(url: string, parentTabId?: number): Promise<number | undefined> {
-    const message = await this.requestExtension(
+    return (await this.openTabWithPlacement(url, parentTabId)).tabId;
+  }
+
+  /**
+   * Open a tab, returning its ID together with its parent read back from
+   * the Tree Style Tab tree when it was opened as a child tab.
+   */
+  async openTabWithPlacement(
+    url: string,
+    parentTabId?: number
+  ): Promise<OpenedTabIdExtensionMessage> {
+    return await this.requestExtension(
       { cmd: "open-tab", url, parentTabId },
       "opened-tab-id",
       TAB_STRUCTURE_RESPONSE_TIMEOUT_MS
     );
-    return message.tabId;
   }
 
   async closeTabs(

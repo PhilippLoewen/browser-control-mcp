@@ -1896,7 +1896,10 @@ describe("MessageHandler", () => {
           // Arrange
           mockTst.isAvailable.mockReturnValue(true);
           (browser.tabs.query as jest.Mock).mockResolvedValue([{ id: 42 }]);
-          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123, windowId: 3 });
+          mockTst.getLightTree.mockResolvedValue([
+            { id: 42, children: [{ id: 123, children: [] }] },
+          ]);
 
           const request: ServerMessageRequest = {
             cmd: "open-tab",
@@ -1916,6 +1919,82 @@ describe("MessageHandler", () => {
             url: "https://example.com",
             openerTabId: 42,
           });
+          expect(mockTst.getLightTree).toHaveBeenCalledWith(3);
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "opened-tab-id",
+            correlationId: "test-correlation-id",
+            tabId: 123,
+            parentTabId: 42,
+            verified: true,
+          });
+        });
+
+        it("should wait until TST has attached the new tab to its parent", async () => {
+          // Arrange: TST attaches the tab only after the first read.
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 99, windowId: 7 });
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123, windowId: 7 });
+          mockTst.getLightTree
+            .mockResolvedValueOnce([
+              { id: 99, children: [] },
+              { id: 123, children: [] },
+            ])
+            .mockResolvedValue([
+              { id: 99, children: [{ id: 123, children: [] }] },
+            ]);
+
+          // Act
+          await tstHandler.handleDecodedMessage({
+            cmd: "open-tab",
+            url: "https://example.com",
+            parentTabId: 99,
+            correlationId: "test-correlation-id",
+          });
+
+          // Assert
+          expect(mockTst.getLightTree).toHaveBeenCalledTimes(2);
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "opened-tab-id",
+            correlationId: "test-correlation-id",
+            tabId: 123,
+            parentTabId: 99,
+            verified: true,
+          });
+        });
+
+        it("should report where the new tab is when TST does not attach it in time", async () => {
+          jest.useFakeTimers();
+          try {
+            // Arrange
+            mockTst.isAvailable.mockReturnValue(true);
+            (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 99, windowId: 7 });
+            (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123, windowId: 7 });
+            mockTst.getLightTree.mockResolvedValue([
+              { id: 99, children: [] },
+              { id: 123, children: [] },
+            ]);
+
+            // Act
+            const opening = tstHandler.handleDecodedMessage({
+              cmd: "open-tab",
+              url: "https://example.com",
+              parentTabId: 99,
+              correlationId: "test-correlation-id",
+            });
+            await jest.advanceTimersByTimeAsync(5_000);
+            await opening;
+
+            // Assert
+            expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+              resource: "opened-tab-id",
+              correlationId: "test-correlation-id",
+              tabId: 123,
+              parentTabId: null,
+              verified: false,
+            });
+          } finally {
+            jest.useRealTimers();
+          }
         });
 
         it("should open the tab as a child of the requested parent tab, in the parent's window", async () => {
@@ -1923,7 +2002,10 @@ describe("MessageHandler", () => {
           // Firefox rejects an opener tab from another window.
           mockTst.isAvailable.mockReturnValue(true);
           (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 99, windowId: 7 });
-          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123, windowId: 7 });
+          mockTst.getLightTree.mockResolvedValue([
+            { id: 99, children: [{ id: 123, children: [] }] },
+          ]);
 
           const request: ServerMessageRequest = {
             cmd: "open-tab",
@@ -1951,7 +2033,10 @@ describe("MessageHandler", () => {
           (browser.tabs.query as jest.Mock).mockResolvedValue([
             { id: 42, windowId: 3 },
           ]);
-          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123, windowId: 3 });
+          mockTst.getLightTree.mockResolvedValue([
+            { id: 42, children: [{ id: 123, children: [] }] },
+          ]);
 
           // Act
           await tstHandler.handleDecodedMessage({
@@ -2002,9 +2087,15 @@ describe("MessageHandler", () => {
           // Act
           await tstHandler.handleDecodedMessage(request);
 
-          // Assert
+          // Assert: without a parent there is nothing to wait for.
           expect(browser.tabs.create).toHaveBeenCalledWith({
             url: "https://example.com",
+          });
+          expect(mockTst.getLightTree).not.toHaveBeenCalled();
+          expect(mockClient.sendResourceToServer).toHaveBeenCalledWith({
+            resource: "opened-tab-id",
+            correlationId: "test-correlation-id",
+            tabId: 123,
           });
         });
 

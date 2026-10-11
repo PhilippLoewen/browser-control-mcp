@@ -303,6 +303,28 @@ export class MessageHandler {
 
     const tab = await browser.tabs.create(options);
 
+    // TST attaches the new tab to its opener only after the tab has been
+    // created, so read the tree back until it shows the tab under its
+    // parent; a list read right after the reply then sees the tab in place.
+    const windowId = tab.windowId ?? options.windowId;
+    const openerTabId = options.openerTabId;
+    if (tab.id !== undefined && openerTabId !== undefined && windowId !== undefined) {
+      const { tree, settled } = await this.waitForTree(
+        [windowId],
+        (tree) => tree.get(tab.id!)?.parentTabId === openerTabId
+      );
+      await this.client.sendResourceToServer({
+        resource: "opened-tab-id",
+        correlationId,
+        tabId: tab.id,
+        ...(tree?.has(tab.id)
+          ? { parentTabId: tree.get(tab.id)!.parentTabId ?? null }
+          : {}),
+        verified: settled,
+      });
+      return;
+    }
+
     await this.client.sendResourceToServer({
       resource: "opened-tab-id",
       correlationId,

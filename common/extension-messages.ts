@@ -47,6 +47,18 @@ export interface TabsExtensionMessage extends ExtensionMessageBase {
 export interface OpenedTabIdExtensionMessage extends ExtensionMessageBase {
   resource: "opened-tab-id";
   tabId: number | undefined;
+  /**
+   * Tree Style Tab integration, when the tab was opened as a child: the
+   * new tab's parent read back from the tree (null at the top level).
+   * Absent when the tree could not be read.
+   */
+  parentTabId?: number | null;
+  /**
+   * Tree Style Tab integration, when the tab was opened as a child:
+   * whether the tree showed the tab under its parent before the response
+   * was sent.
+   */
+  verified?: boolean;
 }
 
 export interface TabLoadedExtensionMessage extends ExtensionMessageBase {
