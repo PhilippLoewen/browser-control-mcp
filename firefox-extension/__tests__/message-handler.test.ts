@@ -1918,9 +1918,11 @@ describe("MessageHandler", () => {
           });
         });
 
-        it("should open the tab as a child of the requested parent tab", async () => {
-          // Arrange
+        it("should open the tab as a child of the requested parent tab, in the parent's window", async () => {
+          // Arrange: the parent is in window 7, not the focused window.
+          // Firefox rejects an opener tab from another window.
           mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.get as jest.Mock).mockResolvedValue({ id: 99, windowId: 7 });
           (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
 
           const request: ServerMessageRequest = {
@@ -1935,10 +1937,54 @@ describe("MessageHandler", () => {
 
           // Assert
           expect(browser.tabs.query).not.toHaveBeenCalled();
+          expect(browser.tabs.get).toHaveBeenCalledWith(99);
           expect(browser.tabs.create).toHaveBeenCalledWith({
             url: "https://example.com",
             openerTabId: 99,
+            windowId: 7,
           });
+        });
+
+        it("should open the tab in the active tab's window when it becomes its child", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.query as jest.Mock).mockResolvedValue([
+            { id: 42, windowId: 3 },
+          ]);
+          (browser.tabs.create as jest.Mock).mockResolvedValue({ id: 123 });
+
+          // Act
+          await tstHandler.handleDecodedMessage({
+            cmd: "open-tab",
+            url: "https://example.com",
+            correlationId: "test-correlation-id",
+          });
+
+          // Assert
+          expect(browser.tabs.create).toHaveBeenCalledWith({
+            url: "https://example.com",
+            openerTabId: 42,
+            windowId: 3,
+          });
+        });
+
+        it("should fail clearly when the requested parent tab does not exist", async () => {
+          // Arrange
+          mockTst.isAvailable.mockReturnValue(true);
+          (browser.tabs.get as jest.Mock).mockRejectedValue(
+            new Error("Invalid tab ID: 99")
+          );
+
+          // Act & Assert
+          await expect(
+            tstHandler.handleDecodedMessage({
+              cmd: "open-tab",
+              url: "https://example.com",
+              parentTabId: 99,
+              correlationId: "test-correlation-id",
+            })
+          ).rejects.toThrow("Parent tab 99 does not exist");
+          expect(browser.tabs.create).not.toHaveBeenCalled();
         });
 
         it("should open without an opener when TST is available but there is no active tab", async () => {

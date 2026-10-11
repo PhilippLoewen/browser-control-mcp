@@ -268,20 +268,36 @@ export class MessageHandler {
       throw new Error("Domain in user defined deny list");
     }
 
-    let options: { url: string; openerTabId?: number } = { url };
+    let options: { url: string; openerTabId?: number; windowId?: number } = {
+      url,
+    };
 
     // When Tree Style Tab is available, new tabs become children of the
     // opener tab. Use the explicitly requested parent, or the currently
     // active tab so the tab joins the tree the user is looking at.
     if (this.tst?.isAvailable()) {
-      try {
-        const openerTabId =
-          parentTabId ?? (await this.getActiveTabId());
-        if (openerTabId !== undefined) {
-          options = { url, openerTabId };
+      let opener: browser.tabs.Tab | undefined;
+      if (parentTabId !== undefined) {
+        try {
+          opener = await browser.tabs.get(parentTabId);
+        } catch {
+          throw new Error(`Parent tab ${parentTabId} does not exist`);
         }
-      } catch (error) {
-        console.error("Failed to determine the opener tab for the new tab:", error);
+      } else {
+        try {
+          opener = await this.getActiveTab();
+        } catch (error) {
+          console.error("Failed to determine the opener tab for the new tab:", error);
+        }
+      }
+      if (opener?.id !== undefined) {
+        // Firefox rejects an opener tab from another window, and would
+        // otherwise create the tab in the last focused window.
+        options = {
+          url,
+          openerTabId: opener.id,
+          ...(opener.windowId !== undefined ? { windowId: opener.windowId } : {}),
+        };
       }
     }
 
@@ -294,12 +310,12 @@ export class MessageHandler {
     });
   }
 
-  private async getActiveTabId(): Promise<number | undefined> {
+  private async getActiveTab(): Promise<browser.tabs.Tab | undefined> {
     const [activeTab] = await browser.tabs.query({
       active: true,
       lastFocusedWindow: true,
     });
-    return activeTab?.id;
+    return activeTab;
   }
 
   private async closeTabs(
