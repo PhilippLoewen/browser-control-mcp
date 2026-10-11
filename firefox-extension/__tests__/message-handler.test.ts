@@ -617,6 +617,95 @@ describe("MessageHandler", () => {
         expect(browser.tabs.executeScript).toHaveBeenCalledTimes(1);
       });
 
+      it("should reload a discarded tab before requesting permission for an ungranted domain", async () => {
+        // Arrange
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const mockTab = {
+          id: 123,
+          url: "https://example.com",
+          discarded: true,
+          status: "complete",
+        };
+        (browser.tabs.get as jest.Mock).mockResolvedValue(mockTab);
+        // The domain has not been granted yet, so the permission check
+        // opens the options dialog and fails.
+        (browser.permissions.contains as jest.Mock).mockResolvedValue(false);
+        mockReloadCompletingLoad(123);
+
+        // Act & Assert
+        // Reloading does not require the domain's permission, so the tab
+        // is reloaded first; the request fails only at the permission
+        // check and the extraction script never runs.
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("has not yet granted permission");
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(browser.permissions.contains).toHaveBeenCalledTimes(1);
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+        expect(mockClient.sendResourceToServer).not.toHaveBeenCalled();
+      });
+
+      it("should reject a discarded tab that settles on a deny-listed domain after reload", async () => {
+        // Arrange
+        const configWithDenyList: ExtensionConfig = {
+          secret: "test-secret",
+          toolSettings: {
+            "open-browser-tab": true,
+            "close-browser-tabs": true,
+            "get-list-of-open-tabs": true,
+            "get-recent-browser-history": true,
+            "get-tab-web-content": true,
+            "reorder-browser-tabs": true,
+            "find-highlight-in-browser-tab": true,
+          },
+          domainDenyList: ["denied.example.com"],
+          ports: [8089],
+          auditLog: [],
+        };
+        (browser.storage.local.get as jest.Mock).mockResolvedValue({
+          config: configWithDenyList,
+        });
+
+        const request: ServerMessageRequest = {
+          cmd: "get-tab-content",
+          tabId: 123,
+          correlationId: "test-correlation-id",
+        };
+
+        const preReloadTab = {
+          id: 123,
+          url: "https://ok.example.com",
+          discarded: true,
+          status: "complete",
+        };
+        const settledTab = {
+          id: 123,
+          url: "https://denied.example.com",
+          discarded: false,
+          status: "complete",
+        };
+        // The audit log fetches the tab before the handler does, so the
+        // first two gets still return the pre-reload tab.
+        (browser.tabs.get as jest.Mock)
+          .mockResolvedValueOnce(preReloadTab)
+          .mockResolvedValueOnce(preReloadTab)
+          .mockResolvedValue(settledTab);
+        mockReloadCompletingLoad(123);
+
+        // Act & Assert
+        await expect(
+          messageHandler.handleDecodedMessage(request)
+        ).rejects.toThrow("Domain in tab URL is in the deny list");
+        expect(browser.tabs.reload).toHaveBeenCalledWith(123);
+        expect(browser.permissions.contains).not.toHaveBeenCalled();
+        expect(browser.tabs.executeScript).not.toHaveBeenCalled();
+      });
+
       it("should throw an error if tab URL domain is in deny list", async () => {
         // Arrange
         const configWithDenyList: ExtensionConfig = {

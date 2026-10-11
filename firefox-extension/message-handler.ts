@@ -548,16 +548,30 @@ export class MessageHandler {
       throw new Error(`Domain in tab URL is in the deny list`);
     }
 
-    await this.checkForUrlPermission(tab.url);
-
     // A discarded (unloaded) tab has no content to read; reload it and
     // wait for it to finish loading before running the extraction script.
+    // Reloading a tab does not require the domain's permission, so it
+    // happens even when the domain has not been granted yet.
     let loaded = false;
     if (tab.discarded) {
       await this.waitForTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
       await this.waitForTabUrlSettled(tabId, TAB_URL_SETTLE_TIMEOUT_MS);
       loaded = true;
     }
+
+    // Check the permission against the URL the tab is actually on when
+    // the extraction script runs: after a reload it may have changed
+    // (e.g. a redirect), and the deny list must hold for that URL too.
+    let contentUrl = tab.url;
+    if (loaded) {
+      const settledTab = await browser.tabs.get(tabId);
+      contentUrl = settledTab.url;
+      if (settledTab.url && (await isDomainInDenyList(settledTab.url))) {
+        throw new Error(`Domain in tab URL is in the deny list`);
+      }
+    }
+
+    await this.checkForUrlPermission(contentUrl);
 
     const MAX_CONTENT_LENGTH = 50_000;
     const results = await this.executeTabScript(tabId, {
