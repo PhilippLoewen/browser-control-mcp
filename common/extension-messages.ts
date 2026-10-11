@@ -36,6 +36,12 @@ export interface BrowserTab {
 export interface TabsExtensionMessage extends ExtensionMessageBase {
   resource: "tabs";
   tabs: BrowserTab[];
+  /**
+   * Set when Tree Style Tab is available: true when the tabs carry the tree
+   * structure, false when the tree could not be matched to the tab list and
+   * a flat list without tree fields was sent instead.
+   */
+  treeAvailable?: boolean;
 }
 
 export interface OpenedTabIdExtensionMessage extends ExtensionMessageBase {
@@ -70,13 +76,46 @@ export interface FindHighlightExtensionMessage extends ExtensionMessageBase {
   noOfResults: number;
 }
 
+/** Where a tab ended up in the Tree Style Tab tree after a write. */
+export interface TabPlacement {
+  tabId: number;
+  /** The tab's parent tab, or null when it is at the top level. */
+  parentTabId: number | null;
+}
+
 export interface TabsClosedExtensionMessage extends ExtensionMessageBase {
   resource: "tabs-closed";
+  /**
+   * Tree Style Tab integration, keepChildren only: the kept child tabs and
+   * the parent each one actually ended up under, read back from the tree.
+   * Absent when the tree could not be read.
+   */
+  reparented?: TabPlacement[];
+  /**
+   * Tree Style Tab integration, keepChildren only: whether the tree
+   * settled into the expected placement before the response was sent.
+   */
+  verified?: boolean;
 }
 
 export interface TabGroupCreatedExtensionMessage extends ExtensionMessageBase {
   resource: "new-tab-group";
+  /** The Tree Style Tab group tab ID, or the native tab group ID. */
   groupId: number;
+  /**
+   * Tree Style Tab integration: the requested tabs that are in the group,
+   * and those that are not, read back from the tree. Absent when the tree
+   * could not be read.
+   */
+  memberTabIds?: number[];
+  missingTabIds?: number[];
+  /** Tree Style Tab integration: the group tab's parent, or null at the top level. */
+  parentTabId?: number | null;
+  /**
+   * Tree Style Tab integration: whether the tree settled into the expected
+   * state (all tabs grouped, group tab placed) before the response was sent.
+   */
+  verified?: boolean;
 }
 
 export interface TabsMovedToWindowExtensionMessage extends ExtensionMessageBase {

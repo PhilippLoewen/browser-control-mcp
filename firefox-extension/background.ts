@@ -6,15 +6,21 @@ import {
   isTstIntegrationEnabled,
 } from "./extension-config";
 import { TstClient } from "./tst-client";
+import { WriteLock } from "./write-lock";
 import {
   grantCaptureConsent,
   revokeCaptureConsent,
   showConsentGrantedFeedback,
 } from "./capture-consent";
 
-function initClient(port: number, secret: string, tstClient: TstClient) {
+function initClient(
+  port: number,
+  secret: string,
+  tstClient: TstClient,
+  writeLock: WriteLock
+) {
   const wsClient = new WebsocketClient(port, secret);
-  const messageHandler = new MessageHandler(wsClient, tstClient);
+  const messageHandler = new MessageHandler(wsClient, tstClient, writeLock);
 
   wsClient.connect();
 
@@ -86,8 +92,10 @@ initExtension()
     tstClient.init().catch((error) => {
       console.error("Error initializing Tree Style Tab client:", error);
     });
+    // Writes arriving through any port are applied one at a time.
+    const writeLock = new WriteLock();
     for (const port of portList) {
-      initClient(port, secret, tstClient);
+      initClient(port, secret, tstClient, writeLock);
     }
     initCaptureConsentTracking();
     console.log("Browser extension initialized");

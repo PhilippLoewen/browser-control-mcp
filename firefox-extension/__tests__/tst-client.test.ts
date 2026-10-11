@@ -1,4 +1,4 @@
-import { TstClient, TST_ADDON_ID } from "../tst-client";
+import { TstClient, TST_ADDON_ID, TST_REQUEST_TIMEOUT_MS } from "../tst-client";
 
 /** Flush pending microtasks so fire-and-forget async chains can complete. */
 async function flushMicrotasks(): Promise<void> {
@@ -300,6 +300,56 @@ describe("TstClient", () => {
         child: 3,
         parent: 1,
       });
+    });
+
+    it("detachTab sends the detach command", async () => {
+      sendMessage
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce({ grantedPermissions: [] })
+        .mockImplementationOnce(() => new Promise(() => {}))
+        .mockResolvedValueOnce(true);
+      await client.init();
+
+      expect(await client.detachTab(7)).toBe(true);
+      expect(sendMessage).toHaveBeenLastCalledWith(TST_ADDON_ID, {
+        type: "detach",
+        tab: 7,
+      });
+    });
+
+    it("stays available when a command times out", async () => {
+      sendMessage
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce({ grantedPermissions: [] })
+        .mockImplementationOnce(() => new Promise(() => {}))
+        .mockImplementationOnce(() => new Promise(() => {})); // never answers
+      await client.init();
+
+      const tree = client.getLightTree(1);
+      await jest.advanceTimersByTimeAsync(TST_REQUEST_TIMEOUT_MS);
+
+      expect(await tree).toBeNull();
+      // A slow TST is still installed; only a rejected message proves it is gone.
+      expect(client.isAvailable()).toBe(true);
+    });
+
+    it("gives the group and close commands more time than the read commands", async () => {
+      sendMessage
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce({ grantedPermissions: [] })
+        .mockImplementationOnce(() => new Promise(() => {}))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ id: 789 }), TST_REQUEST_TIMEOUT_MS + 1000)
+            )
+        );
+      await client.init();
+
+      const group = client.createGroup([1, 2], "My group");
+      await jest.advanceTimersByTimeAsync(TST_REQUEST_TIMEOUT_MS + 1000);
+
+      expect(await group).toBe(789);
     });
 
     it("marks itself unavailable when a command fails", async () => {

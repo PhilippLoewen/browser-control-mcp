@@ -18,6 +18,10 @@ export const TST_ADDON_ID = "treestyletab@piro.sakura.ne.jp";
 
 // How long to wait for TST to respond to a command message.
 export const TST_REQUEST_TIMEOUT_MS = 3000;
+// Grouping and closing tabs move many tabs within TST and can take
+// noticeably longer than a query; this stays below the server's 10 s
+// budget for tab structure commands, leaving room for the read-back.
+export const TST_WRITE_REQUEST_TIMEOUT_MS = 6000;
 // How often to retry registration while TST is unavailable.
 const TST_RETRY_INTERVAL_MS = 30_000;
 
@@ -113,12 +117,15 @@ export class TstClient {
    * Returns the ID of the new group tab (parent), or null on failure.
    */
   public async createGroup(tabIds: number[], title: string): Promise<number | null> {
-    const result = await this.command({
-      type: "group-tabs",
-      tabs: tabIds,
-      title,
-      temporary: true,
-    });
+    const result = await this.command(
+      {
+        type: "group-tabs",
+        tabs: tabIds,
+        title,
+        temporary: true,
+      },
+      TST_WRITE_REQUEST_TIMEOUT_MS
+    );
     const item = result as TstTreeItem | undefined;
     return item && typeof item.id === "number" ? item.id : null;
   }
@@ -154,11 +161,23 @@ export class TstClient {
     tabIds: number[],
     method: TstRemoveMethod = "promote-intelligently"
   ): Promise<boolean> {
-    const result = await this.command({
-      type: "remove-tab-keeping-children",
-      tabs: tabIds,
-      method,
-    });
+    const result = await this.command(
+      {
+        type: "remove-tab-keeping-children",
+        tabs: tabIds,
+        method,
+      },
+      TST_WRITE_REQUEST_TIMEOUT_MS
+    );
+    return result === true;
+  }
+
+  /**
+   * Detach the given tab (with its own children) from its parent, making
+   * it a root level tab.
+   */
+  public async detachTab(tabId: number): Promise<boolean> {
+    const result = await this.command({ type: "detach", tab: tabId });
     return result === true;
   }
 
@@ -185,20 +204,26 @@ export class TstClient {
 
   /**
    * Send a command message to TST.
-   * Returns the response, or `null` when TST is unavailable or the
-   * command fails (a command failure marks TST unavailable, and the
-   * retry loop will attempt to re-register).
+   * Returns the response, or `null` when TST is unavailable, the command
+   * fails, or it times out. A failed command marks TST unavailable (the
+   * retry loop will attempt to re-register); a timed-out one does not,
+   * since a slow TST is still installed and may still apply the command.
    */
-  private async command(message: TstMessage): Promise<unknown> {
+  private async command(
+    message: TstMessage,
+    timeoutMs: number = TST_REQUEST_TIMEOUT_MS
+  ): Promise<unknown> {
     if (!this.isAvailable()) return null;
     try {
       return await withTimeout(
         browser.runtime.sendMessage(TST_ADDON_ID, message),
-        TST_REQUEST_TIMEOUT_MS
+        timeoutMs
       );
     } catch (error) {
       console.error(`Failed to send TST command '${message.type}':`, error);
-      this.markUnavailable();
+      if (!(error instanceof TimeoutError)) {
+        this.markUnavailable();
+      }
       return null;
     }
   }
@@ -299,9 +324,11 @@ export class TstClient {
   }
 }
 
+class TimeoutError extends Error {}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timed out after ${ms} ms`)), ms);
+    const timer = setTimeout(() => reject(new TimeoutError(`Timed out after ${ms} ms`)), ms);
     promise.then(
       (value) => {
         clearTimeout(timer);

@@ -2,6 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { BrowserAPI } from "./browser-api";
+import {
+  formatCloseResult,
+  formatGroupResult,
+  formatTabListJson,
+  formatTabListText,
+} from "./tab-format";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
@@ -43,73 +49,54 @@ mcpServer.tool(
 
 mcpServer.tool(
   "close-browser-tabs",
-  "Close tabs in the user's browser by tab IDs. When Tree Style Tab is installed and enabled, use keepChildren to close only the given tabs and keep their child tabs (otherwise closing a collapsed tree would close its hidden children too).",
+  "Close tabs in the user's browser by tab IDs. When Tree Style Tab is installed and enabled, use keepChildren to close only the given tabs and keep their child tabs (otherwise closing a collapsed tree would close its hidden children too). Kept child tabs move to the closed tab's parent, or to the top level when the closed tab was at the top level (e.g. a group tab); each child keeps its own subtree. The result lists where each kept child tab actually ended up.",
   {
     tabIds: z.array(z.number()),
     keepChildren: z
       .boolean()
       .default(false)
       .describe("Keep the child tabs of the closed tabs (Tree Style Tab only; defaults to false)"),
+    childPlacement: z
+      .enum(["promote", "top-level"])
+      .default("promote")
+      .describe(
+        "Where kept child tabs go (with keepChildren): 'promote' moves them to the closed tab's parent, or to the top level for a top-level tab; 'top-level' always moves them to the top level"
+      ),
   },
-  async ({ tabIds, keepChildren }) => {
-    await browserApi.closeTabs(tabIds, keepChildren);
+  async ({ tabIds, keepChildren, childPlacement }) => {
+    const closed = await browserApi.closeTabs(tabIds, keepChildren, childPlacement);
     return {
-      content: [{ type: "text", text: "Closed tabs" }],
+      content: [{ type: "text", text: formatCloseResult(closed) }],
     };
   }
 );
 
 mcpServer.tool(
   "get-list-of-open-tabs",
-  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs. When Tree Style Tab is installed and enabled, tabs are listed in tree order, indented by their depth, with markers for the active tab, discarded (unloaded) tabs, the number of child tabs, and collapsed subtrees (collapsed = the tab's child tabs are hidden). Each tab line includes the ID of the window the tab belongs to.",
+  "Get the list of open tabs in the user's browser. Use offset and limit parameters for pagination when there are many tabs. When Tree Style Tab is installed and enabled, tabs are listed in tree order, indented by their depth, with their parent tab ID and markers for the active tab, discarded (unloaded) tabs, the number of child tabs, and collapsed subtrees (collapsed = the tab's child tabs are hidden). Each tab line includes the ID of the window the tab belongs to. If Tree Style Tab's tree cannot be matched to the tab list (e.g. right after a change), the tabs are listed flat with a note saying so. Use format 'json' for a structured list with id, window, depth, parent, url and title per tab (tree fields are null and 'tree' is false when the list is flat).",
   {
     offset: z.number().int().min(0).default(0).describe("Starting index for pagination (0-based, must be >= 0)"),
     limit: z.number().default(100).describe("Maximum number of tabs to return (default: 100, max: 500)"),
+    format: z
+      .enum(["text", "json"])
+      .default("text")
+      .describe("'text' (default) for an indented list, 'json' for a structured list"),
   },
-  async ({ offset, limit }) => {
+  async ({ offset, limit, format }) => {
     // Validate and cap the limit
     const effectiveLimit = Math.min(Math.max(1, limit), 500);
+    const page = { offset, limit: effectiveLimit };
 
-    const openTabs = await browserApi.getTabList();
-    const totalTabs = openTabs.length;
-
-    // Apply pagination
-    const paginatedTabs = openTabs.slice(offset, offset + effectiveLimit);
-    const hasMore = offset + effectiveLimit < totalTabs;
-
-    // Add pagination info as the first content item
-    const paginationInfo = {
-      type: "text" as const,
-      text: `Showing tabs ${offset + 1}-${offset + paginatedTabs.length} of ${totalTabs} total tabs${hasMore ? ` (use offset=${offset + effectiveLimit} to see more)` : ''}`,
-    };
-
-    const tabContent = paginatedTabs.map((tab) => {
-      let lastAccessed = "unknown";
-      if (tab.lastAccessed) {
-        lastAccessed = dayjs(tab.lastAccessed).fromNow(); // LLM-friendly time ago
-      }
-      const markers: string[] = [];
-      if (tab.active) {
-        markers.push("[active]");
-      }
-      if (tab.childCount) {
-        markers.push(`[${tab.childCount} child tab${tab.childCount === 1 ? "" : "s"}]`);
-      }
-      if (tab.collapsed) {
-        markers.push("[collapsed]");
-      }
-      if (tab.discarded) {
-        markers.push("[discarded]");
-      }
-      const markerSuffix = markers.length > 0 ? ` ${markers.join(" ")}` : "";
+    const { tabs, treeAvailable } = await browserApi.getTabListWithTreeState();
+    if (format === "json") {
       return {
-        type: "text" as const,
-        text: `${"  ".repeat(tab.depth ?? 0)}tab id=${tab.id}, tab window=${tab.windowId ?? "unknown"}, tab url=${tab.url}, tab title=${tab.title}, last accessed=${lastAccessed}${markerSuffix}`,
+        content: [
+          { type: "text", text: formatTabListJson(tabs, page, treeAvailable) },
+        ],
       };
-    });
-
+    }
     return {
-      content: [paginationInfo, ...tabContent],
+      content: formatTabListText(tabs, page, treeAvailable),
     };
   }
 );
@@ -232,7 +219,7 @@ mcpServer.tool(
 
 mcpServer.tool(
   "group-browser-tabs",
-  "Organize opened browser tabs in a new tab group. When Tree Style Tab is installed and enabled, a Tree Style Tab group is created instead (the groupColor option is then ignored), and isCollapsed collapses that group's tree.",
+  "Organize opened browser tabs in a new tab group. When Tree Style Tab is installed and enabled, a Tree Style Tab group tab is created instead (the groupColor option is then ignored), and isCollapsed collapses that group's tree. The group tab is placed where the first of the tabs was: under the parent all the tabs shared, or at the top level when they did not share one. The result reports how many of the tabs actually ended up in the group, and is an error listing the tabs that were not grouped.",
   {
     tabIds: z.array(z.number()),
     isCollapsed: z.boolean().default(false),
@@ -252,19 +239,16 @@ mcpServer.tool(
     groupTitle: z.string().default("New Group"),
   },
   async ({ tabIds, isCollapsed, groupColor, groupTitle }) => {
-    const groupId = await browserApi.groupTabs(
+    const group = await browserApi.groupTabsWithMembership(
       tabIds,
       isCollapsed,
       groupColor,
       groupTitle
     );
+    const { text, isError } = formatGroupResult(groupTitle, tabIds, group);
     return {
-      content: [
-        {
-          type: "text",
-          text: `Created tab group "${groupTitle}" with ${tabIds.length} tabs (group ID: ${groupId})`,
-        },
-      ],
+      content: [{ type: "text", text }],
+      isError,
     };
   }
 );
