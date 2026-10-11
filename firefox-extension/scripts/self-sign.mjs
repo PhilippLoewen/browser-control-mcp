@@ -229,11 +229,14 @@ class GhError extends Error {
   }
 }
 
-async function ghApi(gh, method, urlPath, { json, body, headers } = {}) {
-  const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}${urlPath}`;
+async function ghApi(gh, method, url, { json, body, headers } = {}) {
+  // Relative paths resolve against the repo's api.github.com API; absolute
+  // URLs (the uploads.github.com `upload_url` from a release object) are
+  // used as-is.
+  const fullUrl = url.startsWith('http') ? url : `https://api.github.com/repos/${gh.owner}/${gh.repo}${url}`;
   let res;
   try {
-    res = await fetch(url, {
+    res = await fetch(fullUrl, {
       method,
       headers: {
         Authorization: `Bearer ${gh.token}`,
@@ -245,10 +248,10 @@ async function ghApi(gh, method, urlPath, { json, body, headers } = {}) {
       body: json !== undefined ? JSON.stringify(json) : body,
     });
   } catch (err) {
-    throw new Error(`GitHub API ${method} ${urlPath} unreachable: ${err.message}`);
+    throw new Error(`GitHub API ${method} ${url} unreachable: ${err.message}`);
   }
   const text = await res.text();
-  if (!res.ok) throw new GhError(method, urlPath, res.status, res.statusText, text);
+  if (!res.ok) throw new GhError(method, url, res.status, res.statusText, text);
   return text ? JSON.parse(text) : undefined;
 }
 
@@ -278,6 +281,27 @@ function githubConfig(config) {
 }
 
 /**
+ * Expand a release's `upload_url` hypermedia template, e.g.
+ *   https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets{?name,label}
+ * into the concrete URL for uploading one asset. Asset uploads must go to
+ * this uploads.github.com URL — api.github.com has no `/uploads` route and
+ * answers 404 for it.
+ */
+function assetUploadUrl(release, assetName) {
+  if (typeof release.upload_url !== 'string' || release.upload_url.length === 0) {
+    fail(`release ${release.id} has no upload_url — cannot upload an asset`);
+  }
+  const query = `name=${encodeURIComponent(assetName)}`;
+  if (release.upload_url.endsWith('{?name,label}')) {
+    return release.upload_url.replace('{?name,label}', `?${query}`);
+  }
+  if (release.upload_url.endsWith('{?name}')) {
+    return release.upload_url.replace('{?name}', `?${query}`);
+  }
+  return `${release.upload_url}?${query}`;
+}
+
+/**
  * Upload the signed XPI as a release asset. Creates the release if the tag
  * does not exist yet, and replaces an existing asset with the same name
  * (the uploads API cannot overwrite in place), so re-runs are idempotent.
@@ -302,7 +326,9 @@ export async function uploadToRelease({ token, owner, repo, tag, xpiPath, assetN
     console.log(`    removed existing asset "${assetName}" (the uploads API cannot overwrite)`);
   }
   const buf = readFileSync(xpiPath);
-  const asset = await ghApi(gh, 'POST', `/releases/${release.id}/uploads?name=${encodeURIComponent(assetName)}`, {
+  // Uploads go to the release's `upload_url` (uploads.github.com), not to
+  // api.github.com — see assetUploadUrl().
+  const asset = await ghApi(gh, 'POST', assetUploadUrl(release, assetName), {
     body: buf,
     headers: { 'Content-Type': 'application/zip' },
   });
