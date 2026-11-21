@@ -2,6 +2,12 @@
   "name": "mcp-server",
   "version": "1.8.0",
   "main": "dist/server.js",
+  "bin": {
+    "browser-control-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist/"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
@@ -9,18 +15,20 @@
     "build": "tsc",
     "test": "npm run build && node --test __tests__/*.test.mjs",
     "start": "node dist/server.js",
+    "install-local": "sh scripts/install-local.sh",
     "pack-dxt": "npx @anthropic-ai/dxt pack"
   },
   "license": "MIT",
   "description": "Browser Control MCP Server",
   "dependencies": {
-    "@browser-control-mcp/common": "../common",
     "@modelcontextprotocol/sdk": "^1.7.0",
     "dayjs": "^1.11.13",
     "readline": "^1.3.0",
-    "ws": "^8.18.1"
+    "ws": "^8.18.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@browser-control-mcp/common": "../common",
     "@types/ws": "^8.18.0",
     "typescript": "^5.8.2"
   }
