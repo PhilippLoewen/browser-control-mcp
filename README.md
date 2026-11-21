@@ -104,6 +104,14 @@ After installing the browser extension, add the following configuration to your 
 ```
 Replace `/path/to/repo` with the correct path.
 
+##### Install as a standalone command
+
+To keep a running MCP client independent of rebuilds in this checkout, install a copy of the server:
+```bash
+cd mcp-server && npm run install-local
+```
+This builds, packs and installs the package (a copy, not a symlink) into `~/.local/lib/node_modules/mcp-server/`, with the command `~/.local/bin/browser-control-mcp`. Set `INSTALL_PREFIX` to install elsewhere. Then use `"command": "browser-control-mcp"` (or the full path) with no `args`. The installed server only changes when you re-run `npm run install-local`.
+
 Set the EXTENSION_SECRET to the value shown on the extension's preferences page in Firefox (you can access it at `about:addons`). You can also set the EXTENSION_PORT environment variable to specify the port that the MCP server will use to communicate with the extension (default is 8089).
 
 It might take a few seconds for the MCP server to connect to the extension.
